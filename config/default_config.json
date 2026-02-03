@@ -19,9 +19,20 @@
     "sample_duration_sec": 15,
     "auto_extract_from_sermon": true
   },
-  "web": {
-    "port": 8080,
-    "host": "localhost"
+  "output": {
+    "base_dir": "./output/sermons",
+    "generate_index": true,
+    "formats": ["markdown", "pdf", "text"],
+    "organize_by": "author"
+  },
+  "object_storage": {
+    "enabled": false,
+    "type": "s3",
+    "bucket": "sermon-voices",
+    "endpoint": "http://localhost:9000",
+    "access_key": "",
+    "secret_key": "",
+    "auto_upload": false
   },
   "paths": {
     "python_scripts": "./python",

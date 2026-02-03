@@ -1,6 +1,6 @@
 # Sermon Voices
 
-A hybrid C++/Python application that processes sermon audio/video files with AI-powered transcription, translation, voice-cloning TTS, and web UI. 100% local processing on M1 Mac, zero cloud APIs.
+A hybrid C++/Python application that processes sermon audio/video files with AI-powered transcription, translation, voice-cloning TTS, and organized output for object storage. 100% local processing on M1 Mac, zero cloud APIs.
 
 ## Features
 
@@ -8,8 +8,9 @@ A hybrid C++/Python application that processes sermon audio/video files with AI-
 - 📝 Local transcription (whisper.cpp)
 - 🌍 Multi-language translation (Ollama)
 - 🎤 Voice cloning + TTS (Coqui XTTS v2)
-- 📄 Document generation (Markdown, PDF, LaTeX)
-- 🌐 Web UI for browsing sermons
+- 📄 Document generation (Markdown, PDF, Text)
+- 📦 Organized output with metadata.json for each sermon
+- ☁️ Ready for object storage (S3, MinIO)
 - ✅ Simple idempotent processing (no queue, just rerun)
 - 🚫 Zero cloud APIs, 100% local on M1 Mac
 
@@ -21,8 +22,7 @@ A hybrid C++/Python application that processes sermon audio/video files with AI-
 - **whisper.cpp**: Fast local transcription
 - **Ollama**: Local LLM for translation
 - **Coqui XTTS v2**: Voice cloning and TTS
-- **cpp-httplib**: Web server
-- **nlohmann/json**: JSON processing
+- **nlohmann/json**: JSON processing and metadata
 
 ## Quick Start
 
@@ -58,9 +58,9 @@ cp your_sermon.mp3 blobs/john_piper/2024-01-15_10-30-00.mp3
 # Process all sermons
 make process
 
-# Start web server to view results
-make serve
-# Open http://localhost:8080 in your browser
+# View organized output
+ls output/sermons/john_piper/2024-01-15_10-30-00/
+# Will show: metadata.json, original/, transcripts/, audio/, documents/
 ```
 
 ## Project Structure
@@ -68,16 +68,18 @@ make serve
 ```
 sermon-voices/
 ├── blobs/                  # Input audio/video files
-├── output/                 # Generated outputs
-│   ├── transcripts/       # Timestamped transcripts
-│   ├── translations/      # Multi-language translations
-│   ├── audio/             # Generated TTS audio
-│   ├── markdown/          # Formatted documents
-│   ├── pdf/               # PDF outputs
-│   └── latex/             # LaTeX sources
+├── output/
+│   ├── sermons/           # Organized sermon outputs
+│   │   └── <author>/
+│   │       └── <sermon_id>/
+│   │           ├── metadata.json
+│   │           ├── original/
+│   │           ├── transcripts/
+│   │           ├── audio/
+│   │           └── documents/
+│   └── index.json         # Global sermon index
 ├── src/                    # C++ source code
 ├── python/                 # Python ML scripts
-├── web/                    # Web UI
 └── config/                 # Configuration files
 ```
 
@@ -118,7 +120,7 @@ make debug             # Build with debug symbols
 # Run
 make process           # Process all sermons
 make process-one FILE= # Process a single sermon
-make serve             # Start web server
+make index             # Generate global index.json
 
 # Testing
 make test              # Run all tests
@@ -141,7 +143,8 @@ Edit `config/default_config.json` to customize:
 - Transcription model (base/small/medium)
 - TTS settings
 - Voice cloning parameters
-- Web server port
+- Output directory structure
+- Object storage settings (S3/MinIO)
 
 ## Development
 

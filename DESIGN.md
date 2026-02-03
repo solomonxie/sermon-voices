@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-This is a hybrid C++/Python application designed to process sermon audio/video files with AI-powered transcription, translation, voice-cloning TTS, and web UI presentation.
+This is a hybrid C++/Python application designed to process sermon audio/video files with AI-powered transcription, translation, voice-cloning TTS, and organized file output for object storage (S3/MinIO).
 
 ### Why Hybrid C++/Python?
 
@@ -11,9 +11,9 @@ This is a hybrid C++/Python application designed to process sermon audio/video f
 - Project structure and organization
 - Build system (CMake)
 - File I/O and data management
-- Web server implementation
-- JSON processing
+- JSON processing and metadata generation
 - Process management
+- Output organization for object storage
 
 **Python Components (for best ML tools)**:
 - Whisper transcription (faster-whisper)
@@ -24,6 +24,12 @@ This is a hybrid C++/Python application designed to process sermon audio/video f
 - C++ launches Python scripts via subprocess (popen/system)
 - Data exchange via JSON files
 - Clean separation: C++ orchestrates, Python executes ML inference
+
+**Output Philosophy**:
+- All outputs organized in structured directories
+- Each sermon gets a metadata.json file
+- Ready for upload to object storage (S3, MinIO, etc.)
+- No web server - pure file-based output
 
 ## Core Components
 
@@ -154,24 +160,59 @@ Creates formatted output documents.
 - **Markdown**: Simple formatting with timestamps and parallel text
 - **PDF**: Shell out to pandoc or wkhtmltopdf
 - **LaTeX**: Generate .tex source files
+- **Plain Text**: Simple text format for each language
 
 **Features**:
 - Include metadata headers (author, date, languages)
 - Bilingual parallel text display
 - Timestamp references
 
-### 10. WebServer (`web_server.hpp/cpp`)
-HTTP server using cpp-httplib.
+### 10. MetadataGenerator (`metadata_generator.hpp/cpp`)
+Generates comprehensive metadata.json for each sermon.
 
-**Endpoints**:
-- `GET /` - Main page with sermon list
-- `GET /sermon/<id>` - Sermon detail page
-- `GET /api/sermons` - JSON list of all sermons
-- `GET /api/sermon/<id>` - Full sermon data
-- `GET /audio/<path>` - Stream audio files
-- `GET /static/<path>` - Serve static files
+**Purpose**: Create structured metadata for object storage indexing and retrieval.
 
-**Template Engine**: inja (Jinja2-like for C++)
+**Metadata Schema**:
+```json
+{
+  "sermon_id": "john_piper_2024-01-15_10-30-00",
+  "author": "john_piper",
+  "title": "Grace and Truth",
+  "date": "2024-01-15T10:30:00Z",
+  "original_file": "blobs/john_piper/2024-01-15_10-30-00.mp3",
+  "duration_seconds": 2400,
+  "file_size_bytes": 45678900,
+  "languages": ["en", "zh", "es", "ko"],
+  "processing": {
+    "transcribed_at": "2024-01-15T14:00:00Z",
+    "translated_at": "2024-01-15T14:30:00Z",
+    "tts_generated_at": "2024-01-15T15:00:00Z"
+  },
+  "files": {
+    "original_audio": "original/audio.mp3",
+    "transcripts": {
+      "en": "transcripts/en.json",
+      "zh": "transcripts/zh.json"
+    },
+    "audio": {
+      "en": "audio/en.mp3",
+      "zh": "audio/zh.mp3"
+    },
+    "documents": {
+      "markdown": "docs/sermon.md",
+      "pdf": "docs/sermon.pdf",
+      "text": "docs/sermon.txt"
+    }
+  },
+  "tags": ["gospel", "grace", "theology"],
+  "series": "Gospel of Luke"
+}
+```
+
+**Methods**:
+- `generate_metadata(sermon)` - Create metadata.json
+- `update_metadata(sermon_id, field, value)` - Update specific fields
+- `validate_metadata(json)` - Ensure schema compliance
 
 ## Data Flow
 
@@ -197,14 +238,60 @@ For each sermon:
   |
   +-> TTSEngine (for each language) -> Generated audio
   |
-  +-> DocumentGenerator -> Markdown, PDF, LaTeX
+  +-> DocumentGenerator -> Markdown, PDF, LaTeX, Text
+  |
+  +-> MetadataGenerator -> metadata.json
   |
   v
-Output: Organized in output/ directory
+Output: Organized directory structure
   |
   v
-WebServer -> Present via web UI
+Ready for object storage upload (S3/MinIO)
 ```
+
+## Output Directory Structure
+
+Each sermon gets its own directory with all associated files:
+
+```
+output/
+├── sermons/
+│   └── <author>/
+│       └── <sermon_id>/
+│           ├── metadata.json           # Complete sermon metadata
+│           ├── original/
+│           │   └── audio.mp3           # Original audio file
+│           ├── transcripts/
+│           │   ├── original.json       # Original language transcript
+│           │   ├── en.json             # English transcript
+│           │   ├── zh.json             # Chinese transcript
+│           │   ├── es.json             # Spanish transcript
+│           │   └── ko.json             # Korean transcript
+│           ├── audio/
+│           │   ├── en.mp3              # English TTS audio
+│           │   ├── zh.mp3              # Chinese TTS audio
+│           │   ├── es.mp3              # Spanish TTS audio
+│           │   └── ko.mp3              # Korean TTS audio
+│           └── documents/
+│               ├── sermon.md           # Markdown format
+│               ├── sermon.pdf          # PDF format
+│               ├── sermon.tex          # LaTeX source
+│               ├── en.txt              # English text
+│               ├── zh.txt              # Chinese text
+│               ├── es.txt              # Spanish text
+│               └── ko.txt              # Korean text
+│
+└── index.json                          # Global index of all sermons
+```
+
+### Object Storage Mapping
+
+This structure maps directly to S3/MinIO:
+- Bucket: `sermon-voices`
+- Prefix: `sermons/<author>/<sermon_id>/`
+- Each file has its own object key
+- metadata.json enables search and indexing
+- index.json provides global catalog
 
 ## Processing Model: Simple & Idempotent
 
@@ -254,9 +341,20 @@ No job queue, no daemon. Just run `make process` and it processes everything tha
     "sample_duration_sec": 15,
     "auto_extract_from_sermon": true
   },
-  "web": {
-    "port": 8080,
-    "host": "localhost"
+  "output": {
+    "base_dir": "./output/sermons",
+    "generate_index": true,
+    "formats": ["markdown", "pdf", "text"],
+    "organize_by": "author"
+  },
+  "object_storage": {
+    "enabled": false,
+    "type": "s3",
+    "bucket": "sermon-voices",
+    "endpoint": "http://localhost:9000",
+    "access_key": "",
+    "secret_key": "",
+    "auto_upload": false
   },
   "paths": {
     "python_scripts": "./python",
