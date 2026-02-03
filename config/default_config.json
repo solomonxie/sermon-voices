@@ -1,0 +1,30 @@
+{
+  "transcription": {
+    "model": "base",
+    "language": "auto",
+    "device": "metal"
+  },
+  "translation": {
+    "target_languages": ["en", "zh", "es", "ko"],
+    "ollama_model": "llama3",
+    "ollama_url": "http://localhost:11434"
+  },
+  "tts": {
+    "engine": "coqui-xtts",
+    "use_voice_cloning": true,
+    "languages": ["en", "zh", "es", "ko"],
+    "gpu_acceleration": "mps"
+  },
+  "voice_cloning": {
+    "sample_duration_sec": 15,
+    "auto_extract_from_sermon": true
+  },
+  "web": {
+    "port": 8080,
+    "host": "localhost"
+  },
+  "paths": {
+    "python_scripts": "./python",
+    "models": "./models"
+  }
+}
