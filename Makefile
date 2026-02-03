@@ -13,9 +13,7 @@ YELLOW := \033[0;33m
 RED := \033[0;31m
 NC := \033[0m # No Color
 
-# Build directories
-BUILD_DIR := build
-BIN_DIR := $(BUILD_DIR)/bin
+# Directories
 VENV_DIR := venv
 
 # Python
@@ -29,17 +27,11 @@ help: ## Show all available commands with descriptions
 	@echo "$(GREEN)Setup Commands:$(NC)"
 	@grep -E '^setup.*:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
-	@echo "$(GREEN)Build Commands:$(NC)"
-	@grep -E '^(build|rebuild|debug|clean):.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
-	@echo ""
 	@echo "$(GREEN)Run Commands:$(NC)"
-	@grep -E '^(process|serve):.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
-	@echo ""
-	@echo "$(GREEN)Test Commands:$(NC)"
-	@grep -E '^test.*:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
+	@grep -E '^(process|extract-metadata|reorganize-files):.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(GREEN)Utility Commands:$(NC)"
-	@grep -E '^(check-deps|models-info|format|lint):.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
+	@grep -E '^(check-deps|models-info|clean-output):.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 
 # ============================================================================
@@ -49,27 +41,16 @@ help: ## Show all available commands with descriptions
 setup: setup-python setup-ollama ## Install all dependencies (Python packages, Ollama models)
 	@echo "$(GREEN)✓ Setup complete!$(NC)"
 	@echo "Next steps:"
-	@echo "  1. Run 'make build' to compile the project"
-	@echo "  2. Place sermon files in blobs/<author>/<date>.mp3"
-	@echo "  3. Run 'make process' to process sermons"
-	@echo "  4. Run 'make serve' to start the web UI"
+	@echo "  1. Run 'make extract-metadata' to scan original blobs"
+	@echo "  2. Run 'make reorganize-files' to structure the audio files"
+	@echo "  3. Run 'make process' to start the pipeline"
 
-setup-cpp: ## Install C++ dependencies (currently header-only libs)
-	@echo "$(BLUE)Installing C++ dependencies...$(NC)"
-	@mkdir -p lib
-	@if [ ! -d "lib/json" ]; then \
-		echo "Downloading nlohmann/json..."; \
-		cd lib && git clone https://github.com/nlohmann/json.git; \
-	fi
-	@if [ ! -d "lib/cpp-httplib" ]; then \
-		echo "Downloading cpp-httplib..."; \
-		cd lib && git clone https://github.com/yhirose/cpp-httplib.git; \
-	fi
-	@if [ ! -d "lib/inja" ]; then \
-		echo "Downloading inja..."; \
-		cd lib && git clone https://github.com/pantor/inja.git; \
-	fi
-	@echo "$(GREEN)✓ C++ dependencies installed$(NC)"
+setup: setup-python setup-ollama ## Install all dependencies (Python packages, Ollama models)
+	@echo "$(GREEN)✓ Setup complete!$(NC)"
+	@echo "Next steps:"
+	@echo "  1. Run 'make extract-metadata' to scan original blobs"
+	@echo "  2. Run 'make reorganize-files' to structure the audio files"
+	@echo "  3. Run 'make process' to start the pipeline"
 
 setup-python: ## Create venv and install Python dependencies
 	@echo "$(BLUE)Setting up Python environment...$(NC)"
@@ -91,31 +72,6 @@ setup-ollama: ## Download Ollama models (llama3)
 	@ollama pull llama3
 	@echo "$(GREEN)✓ Ollama models ready$(NC)"
 
-# ============================================================================
-# Build Commands
-# ============================================================================
-
-build: setup-cpp ## Build the C++ project
-	@echo "$(BLUE)Building project...$(NC)"
-	@mkdir -p $(BUILD_DIR)
-	@cd $(BUILD_DIR) && cmake -DCMAKE_BUILD_TYPE=Release ..
-	@cd $(BUILD_DIR) && cmake --build .
-	@echo "$(GREEN)✓ Build complete!$(NC)"
-
-rebuild: clean build ## Clean and rebuild
-
-debug: setup-cpp ## Build with debug symbols
-	@echo "$(BLUE)Building project (debug mode)...$(NC)"
-	@mkdir -p $(BUILD_DIR)
-	@cd $(BUILD_DIR) && cmake -DCMAKE_BUILD_TYPE=Debug ..
-	@cd $(BUILD_DIR) && cmake --build .
-	@echo "$(GREEN)✓ Debug build complete!$(NC)"
-
-clean: ## Clean build artifacts
-	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
-	@rm -rf $(BUILD_DIR)
-	@echo "$(GREEN)✓ Clean complete$(NC)"
-
 clean-output: ## Clean all generated outputs
 	@echo "$(YELLOW)WARNING: This will delete all generated transcripts, translations, and audio!$(NC)"
 	@read -p "Are you sure? [y/N] " -n 1 -r; \
@@ -132,26 +88,19 @@ clean-output: ## Clean all generated outputs
 # Run Commands
 # ============================================================================
 
-process: build ## Process all sermons in blobs/ (full pipeline)
-	@echo "$(BLUE)Processing sermons...$(NC)"
-	@if [ ! -f "$(BIN_DIR)/sermon_voices" ]; then \
-		echo "$(RED)ERROR: Binary not found. Run 'make build' first.$(NC)"; \
-		exit 1; \
-	fi
-	@$(BIN_DIR)/sermon_voices
+process: ## Run the full processing pipeline (scan all metadata)
+	@echo "$(BLUE)Scanning sermons...$(NC)"
+	@PYTHONPATH=. $(PYTHON_VENV) scripts/manage.py scan
 
-process-one: build ## Process a single sermon file (usage: make process-one FILE=path/to/sermon.mp3)
-	@if [ -z "$(FILE)" ]; then \
-		echo "$(RED)ERROR: Please specify FILE=path/to/sermon.mp3$(NC)"; \
-		exit 1; \
-	fi
-	@echo "$(BLUE)Processing single file: $(FILE)$(NC)"
-	@$(BIN_DIR)/sermon_voices --file "$(FILE)"
+extract-metadata: setup-python ## Extract metadata from all MP3 files
+	@echo "$(BLUE)Extracting metadata...$(NC)"
+	@PYTHONPATH=. $(PYTHON_VENV) scripts/manage.py extract --llm
+	@echo "$(GREEN)✓ Metadata extraction complete$(NC)"
 
-serve: build ## Start web server on http://localhost:8080
-	@echo "$(BLUE)Starting web server...$(NC)"
-	@echo "Open http://localhost:8080 in your browser"
-	@$(BIN_DIR)/sermon_voices --serve
+reorganize-files: setup-python ## Reorganize files based on metadata
+	@echo "$(BLUE)Reorganizing files...$(NC)"
+	@PYTHONPATH=. $(PYTHON_VENV) scripts/manage.py reorganize $(if $(NO_DRY_RUN),--no-dry-run,)
+	@echo "$(GREEN)✓ File reorganization complete$(NC)"
 
 # ============================================================================
 # Test Commands
@@ -187,12 +136,6 @@ test-tts: ## Test TTS generation only
 
 check-deps: ## Verify all dependencies are installed
 	@echo "$(BLUE)Checking dependencies...$(NC)"
-	@echo -n "CMake: "
-	@if command -v cmake &> /dev/null; then \
-		echo "$(GREEN)✓ $(shell cmake --version | head -n1)$(NC)"; \
-	else \
-		echo "$(RED)✗ Not found$(NC)"; \
-	fi
 	@echo -n "Python: "
 	@if command -v $(PYTHON) &> /dev/null; then \
 		echo "$(GREEN)✓ $(shell $(PYTHON) --version)$(NC)"; \
@@ -229,19 +172,6 @@ models-info: ## Show info about downloaded models
 		$(PIP) list | grep -E '(whisper|TTS|ollama)'; \
 	else \
 		echo "$(RED)Virtual environment not created$(NC)"; \
-	fi
-
-format: ## Format C++ code with clang-format
-	@echo "$(BLUE)Formatting C++ code...$(NC)"
-	@find src include tests -name "*.cpp" -o -name "*.hpp" | xargs clang-format -i
-	@echo "$(GREEN)✓ Formatting complete$(NC)"
-
-lint: ## Run linter on C++ code
-	@echo "$(BLUE)Linting C++ code...$(NC)"
-	@if command -v clang-tidy &> /dev/null; then \
-		find src -name "*.cpp" | xargs clang-tidy; \
-	else \
-		echo "$(YELLOW)clang-tidy not found, skipping$(NC)"; \
 	fi
 
 watch: ## Auto-rebuild on file changes (requires fswatch)
