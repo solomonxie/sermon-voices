@@ -1,0 +1,1 @@
+This folder contains original sermon audio/video files. Will not track in Git.
