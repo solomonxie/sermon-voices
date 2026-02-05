@@ -17,7 +17,7 @@ NC := \033[0m # No Color
 VENV_DIR := venv
 
 # Python
-PYTHON := python3
+PYTHON := python3.11  # TTS library requires < Python 3.12
 PIP := $(VENV_DIR)/bin/pip
 PYTHON_VENV := $(VENV_DIR)/bin/python
 
@@ -76,16 +76,16 @@ clean-output: ## Clean all generated outputs
 # Run Commands
 # ============================================================================
 
-process: setup-python ## Run the full processing pipeline
+process: ## Run the full processing pipeline
 	@echo "$(BLUE)Starting full pipeline...$(NC)"
 	@PYTHONPATH=src $(PYTHON_VENV) src/main.py
 
-extract-metadata: setup-python ## Extract metadata from blobs/ using LLM
+extract-metadata: ## Extract metadata from blobs/ using LLM
 	@echo "$(BLUE)Extracting metadata...$(NC)"
 	@PYTHONPATH=src $(PYTHON_VENV) src/main.py --mode extract
 	@echo "$(GREEN)✓ Metadata extraction complete$(NC)"
 
-reorganize-files: setup-python ## Reorganize files based on extracted metadata
+reorganize-files: ## Reorganize files based on extracted metadata
 	@echo "$(BLUE)Reorganizing files...$(NC)"
 	@PYTHONPATH=src $(PYTHON_VENV) src/main.py --mode reorganize
 	@echo "$(GREEN)✓ File reorganization complete$(NC)"

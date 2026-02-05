@@ -25,6 +25,7 @@ def main():
     for path in files:
         try:
             process_sermon(path)
+            break
         except Exception as e:
             print(f"❌ Error processing {path}: {str(e)}")
 
@@ -33,15 +34,18 @@ def process_sermon(path: str):
     print(f"\n📂 Processing: {path}")
     
     # 1. Metadata Extraction
-    metadata = extract_metadata(path)
-    if not metadata:
+    original_metadata = extract_metadata(path)
+    if not original_metadata:
         print(f"⏩ Skipping {path}: Could not extract metadata")
         return
+    
+    # 1.1 Metadata Refinement (translation)
+    metadata = refine_metadata(original_metadata)
 
     # 2. Directory Setup
     sermon_dir = get_sermon_dir(metadata)
     os.makedirs(sermon_dir, exist_ok=True)
-    
+
     # 3. Move Original File
     original_path = os.path.join(sermon_dir, 'original.mp3')
     if not os.path.exists(original_path):
@@ -77,22 +81,21 @@ def process_sermon(path: str):
 def extract_metadata(path: str) -> Dict[str, Any]:
     """ Uses local LLM to extract structured metadata from the file path. """
     prompt = f"""
-    Extract sermon metadata from this file path: "{path}"
-    
-    Return ONLY a JSON object with these keys:
-    - preacher: List of speaker names (original)
-    - series: List of series/book names (original)
+    Extract sermon metadata from this file path: "{path}".
+    Every extraction should be in the context of Bible and Christianity knowledge.
+    Return a JSON object with these keys:
+    - preacher: preacher/pastor name (original)
+    - series: series/book name in bible (original)
     - sequence: Sequence string (e.g., "001")
     - scriptures: List of objects with [book (English), chapter (int), verses (string)]
     - title: Clean sermon title (original)
     - created_at: Date string (YYYY-MM-DD or "unknown")
-    
     Example:
     {{
-        "preacher": ["唐崇荣"],
-        "series": ["罗马书"],
+        "preacher": "唐崇荣",
+        "series": "传道书",
         "sequence": "001",
-        "scriptures": [{{"book": "Romans", "chapter": 1, "verses": "16-17"}}],
+        "scriptures": [{{"book": "Ecclesiastes", "chapter": 1, "verses": "16-17"}}],
         "title": "上帝的大能",
         "created_at": "2024-01-15"
     }}
@@ -101,15 +104,41 @@ def extract_metadata(path: str) -> Dict[str, Any]:
     try:
         response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt, format='json')
         data = json.loads(response['response'])
+        data['original_path'] = path
         return data
+    except Exception as e:
+        print(f"⚠️ Metadata extraction failed for {path}: {e}")
+        return None
+
+def refine_metadata(metadata: dict) -> dict:
+    prompt = f"""
+    Translate the metadata for this sermon:
+    {metadata}
+
+    All translations should be in the context of Bible and Christianity knowledge.
+    For preacher name translations, prioritize knowledge, otherwise prefer phonetic translation.
+    For series name translations, prioritize knowledge, otherwise prefer phonetic translation.
+    Return JSON object including keys preacher_en, series_en, title_en
+    Example:
+    {{
+        "preacher_en": "Stephen Tong",
+        "series_en": "Ecclesiastes",
+        "title_en": "The Power of God"
+    }}
+    """
+    try:
+        response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt, format='json')
+        data = json.loads(response['response'])
+        metadata.update(data)
+        return metadata
     except Exception as e:
         print(f"⚠️ Metadata extraction failed for {path}: {e}")
         return None
 
 def get_sermon_dir(metadata: dict) -> str:
     """ Generates a unique, slugified directory path for the sermon. """
-    preacher_slug = slugify('_and_'.join(metadata.get('preacher', ['unknown'])))
-    series_slug = slugify('_and_'.join(metadata.get('series', ['unknown'])))
+    preacher_slug = slugify(metadata.get('preacher') or 'unknown')
+    series_slug = slugify(metadata.get('series') or 'unknown')
     
     # Use first scripture for slug
     scripture_slug = "unknown"

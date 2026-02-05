@@ -1,5 +1,7 @@
 blobs/*
-!blobs/README.MD
+!blobs/README.md
+output/*
+!output/README.md
 .DS_Store
 *.pyc
 venv/*
