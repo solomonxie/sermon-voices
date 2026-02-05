@@ -152,6 +152,28 @@ def extract_scriptures(path: str, model: str = None) -> str:
         return "Unknown"
     return result.strip().split('\n')[-1].strip(' "()《》')
 
+def extract_sequence(path: str, model: str = None) -> str:
+    hints = '\n'.join(path.split('/'))
+    prompt = f"""
+    Find the sequence number or lecture number of the sermon from the given hints.
+    Return ONLY the sequence number padded to 3 digits (e.g., 001, 042).
+    If no sequence is found, return "000".
+    DO NOT add any explanation.
+    Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
+    Example output: "042"
+    Example input: "约翰福音第01讲.mp3"
+    Example output: "001"
+    Hints:
+    {hints}
+    """
+    result = ask_llm(prompt, model=model)
+    if not result:
+        return "000"
+    match = re.search(r'(\d+)', result.strip().split('\n')[-1])
+    if match:
+        return match.group(1).zfill(3)
+    return "000"
+
 def extract_created_at(path: str, model: str = None) -> str:
     """ Extracts date (YYYYMMDD) from path or filename using LLM. """
     hints = '\n'.join(path.split('/'))
@@ -160,7 +182,7 @@ def extract_created_at(path: str, model: str = None) -> str:
     Return ONLY the date in YYYYMMDD format.
     If no date is found, return "00000000".
     Hints:
-    {path}
+    {hints}
     """
     data = ask_llm(prompt, model=model)
     if not data:
@@ -174,21 +196,11 @@ def extract_created_at(path: str, model: str = None) -> str:
 def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
     """ Uses modular extraction calls to gather metadata. """
     print(f"🔍 Extracting metadata for: {path}")
-
-    # Extract sequence based on file position in its original folder
-    parent_dir = os.path.dirname(path)
-    all_files = sorted([f for f in os.listdir(parent_dir) if f.lower().endswith('.mp3')])
-
-    try:
-        idx = all_files.index(os.path.basename(path))
-        sequence = str(idx + 1).zfill(3)
-    except ValueError:
-        sequence = "000"
-
+    
     return {
         "preacher": extract_preacher(path, model=model),
         "series": extract_series(path, model=model),
-        "sequence": sequence,
+        "sequence": extract_sequence(path, model=model),
         "scriptures": extract_scriptures(path, model=model),
         "title": extract_title(path, model=model),
         "created_at": extract_created_at(path, model=model),
