@@ -133,71 +133,82 @@ CHINESE_BIBLE_BOOKS = {
     "犹": "Jude", "犹大书": "Jude", "启": "Revelation", "启示录": "Revelation"
 }
 
-def extract_preacher(path: str) -> str:
+def extract_preacher(path: str, model: str = None) -> str:
     hints = '\n'.join(path.split('/'))
     prompt = f"""
-    Find the most propable preacher's name from the given path.
-    Return ONLY the original name. Don't translate and don't respond any other then name.
-    {hints}
-    """
-    return (ask_llm(prompt) or "unknown").strip().split('\n')[-1].strip(' "()')
-
-def extract_series(path: str) -> str:
-    hints = '\n'.join(path.split('/'))
-    prompt = f"""
-    Find the most propable bible book's name from the given hints:
-    If can't find the bible book, return the possible sermon series name.
-    Return ONLY the original name, don't respond any other than a name.
+    Find the most probable preacher's name from the given path.
+    Return ONLY the name in its ORIGINAL language as found in the path. 
+    DO NOT translate. DO NOT add any explanation.
+    
     Hints:
     {hints}
     """
-    return (ask_llm(prompt) or "unknown").strip().split('\n')[-1].strip(' "()')
+    return (ask_llm(prompt, model=model) or "unknown").strip().split('\n')[-1].strip(' "()')
 
-def extract_title(path: str) -> str:
+def extract_series(path: str, model: str = None) -> str:
     hints = '\n'.join(path.split('/'))
     prompt = f"""
-    Find the most sermon title from the given hints.
-    Return ONLY the title in original language, don't respond any other than a title.
+    Find the most probable Bible book or sermon series name from the given hints.
+    Return ONLY the name in its ORIGINAL language as found in the path.
+    DO NOT translate. DO NOT add any explanation.
+    Example input: "blobs/唐崇荣/《唐崇荣-约翰福音》/约翰福音第01讲.mp3"
+    Example output: "约翰福音"
+    Hints:
+    {hints}
+    """
+    return (ask_llm(prompt, model=model) or "unknown").strip().split('\n')[-1].strip(' "()')
+
+def extract_title(path: str, model: str = None) -> str:
+    hints = '\n'.join(path.split('/'))
+    prompt = f"""
+    Find the specific sermon title from the given hints.
+    Return ONLY the title in its ORIGINAL language as found in the path.
+    DO NOT translate. DO NOT add any explanation.
+    Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
+    Example output: "烧荆棘的爆声"
     Hints:
     {path}
     """
-    return (ask_llm(prompt) or "untitled").strip().split('\n')[-1].strip(' "()')
+    return (ask_llm(prompt, model=model) or "untitled").strip().split('\n')[-1].strip(' "()《》')
 
-def extract_scriptures(path: str) -> List[Dict[str, str]]:
+def extract_scriptures(path: str, model: str = None) -> str:
     hints = '\n'.join(path.split('/'))
     prompt = f"""
     Find the specific Bible verses from the given hints.
-    Return ONLY a JSON list of objects, each with 'book', 'chapter', and 'verses'.
-    Example: [{{"book": "Ecclesiastes", "chapter": "1", "verses": "1-11"}}]
-    If no verses found, return empty list [].
+    Return the result in the format: "Book chX:vY" (English book name).
+    If multiple, return comma separated.
+    If no specific verses found, return "Unknown".
+    DO NOT return JSON. DO NOT add any explanation.
+    Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
+    Example output: "Ecclesiastes ch7:v6"
     Hints:
     {hints}
     """
-    data = ask_llm(prompt, format='json')
-    if isinstance(data, list):
-        return data
-    return []
+    result = ask_llm(prompt, model=model)
+    if not result:
+        return "Unknown"
+    return result.strip().split('\n')[-1].strip(' "()《》')
 
-def extract_created_at(path: str) -> str:
+def extract_created_at(path: str, model: str = None) -> str:
     """ Extracts date (YYYYMMDD) from path or filename using LLM. """
     hints = '\n'.join(path.split('/'))
     prompt = f"""
     Find the most probable creation date or preaching date from the given hints.
     Return ONLY the date in YYYYMMDD format.
-    If no date is found, return "unknown".
+    If no date is found, return "00000000".
     Hints:
     {path}
     """
-    data = ask_llm(prompt)
+    data = ask_llm(prompt, model=model)
     if not data:
-        return "unknown"
+        return "00000000"
     # Clean up any potential extra text from LLM
     match = re.search(r'(\d{8})', data)
     if match:
         return match.group(1)
-    return "unknown"
+    return "00000000"
 
-def extract_metadata(path: str) -> Dict[str, Any]:
+def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
     """ Uses modular extraction calls to gather metadata. """
     print(f"🔍 Extracting metadata for: {path}")
     
@@ -212,12 +223,12 @@ def extract_metadata(path: str) -> Dict[str, Any]:
         sequence = "000"
 
     return {
-        "preacher": extract_preacher(path),
-        "series": extract_series(path),
+        "preacher": extract_preacher(path, model=model),
+        "series": extract_series(path, model=model),
         "sequence": sequence,
-        "scriptures": extract_scriptures(path),
-        "title": extract_title(path),
-        "created_at": extract_created_at(path),
+        "scriptures": extract_scriptures(path, model=model),
+        "title": extract_title(path, model=model),
+        "created_at": extract_created_at(path, model=model),
         "original_path": path
     }
 
@@ -411,11 +422,11 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
 
 
 
-def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096) -> Any:
+def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = None) -> Any:
     """ Centralized helper for Ollama LLM communication. """
     try:
         response = ollama.generate(
-            model=DEFAULT_MODEL,
+            model=model or DEFAULT_MODEL,
             prompt=prompt,
             format=format,
             options={
@@ -428,7 +439,7 @@ def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096) -> Any:
             return json.loads(content)
         return content
     except Exception as e:
-        print(f"⚠️ LLM Error: {e}")
+        print(f"⚠️ LLM Error with model {model or DEFAULT_MODEL}: {e}")
         return None
 
         
