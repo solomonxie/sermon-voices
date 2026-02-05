@@ -2,14 +2,14 @@ import pytest
 from src.main import extract_preacher, extract_series, extract_title, extract_scriptures
 
 MODELS = [
-    "qwen2.5-coder:7b",
-    "phi3:3.8b",
-    "qwen3:8b",
-    "qwen2.5:7b",
-    "mistral:7b",
-    "llama3.1:8b",
-    "llama3.2:3b",
-    "llama3:latest"
+    "qwen3:8b",  # PASSED EVERY TEST
+    "qwen2.5:7b",  # failed 1 test
+    "qwen2.5-coder:7b",  # passed every test
+    "phi3:3.8b",  # failed some tests
+    "mistral:7b",  # FAILED EVERY TEST
+    "llama3.1:8b",  # failed some tests
+    "llama3.2:3b",  # failed some tests
+    "llama3:latest"  # failed some tests
 ]
 
 @pytest.mark.parametrize("model", MODELS)
