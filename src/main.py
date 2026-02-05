@@ -12,6 +12,7 @@ DEFAULT_MODEL = 'llama3'
 OUTPUT_ROOT = './output'
 BLOBS_ROOT = './blobs'
 
+
 def main():
     """ Main entry point for the sermon processing pipeline. """
     print(f"🚀 Starting sermon processing pipeline...")
@@ -29,6 +30,7 @@ def main():
             process_sermon(path)
         except Exception as e:
             print(f"❌ Error processing {path}: {str(e)}")
+        break
 
 def process_sermon(path: str):
     """ Processes a single sermon file through the full pipeline. """
@@ -49,7 +51,7 @@ def process_sermon(path: str):
 
     # 2. Directory Setup
     sermon_dir = get_sermon_dir(metadata)
-    
+
     # Check if already processed
     metadata_path = os.path.join(sermon_dir, 'metadata.json')
     if os.path.exists(metadata_path):
@@ -60,31 +62,32 @@ def process_sermon(path: str):
                 return
 
     os.makedirs(sermon_dir, exist_ok=True)
-    
+
     # 3. Move Original File
     original_path = os.path.join(sermon_dir, 'original.mp3')
     if not os.path.exists(original_path):
         shutil.copy2(path, original_path)
         print(f"📝 Moved to: {sermon_dir}")
-    
+
     # 4. Save Initial Metadata
     save_metadata(sermon_dir, metadata)
+    return
 
     # 5. Transcription (Phase 2)
     transcript_path = transcript_audio(original_path)
-    
+
     # 6. Refinement (Phase 3)
     refined_path = refine_transcript(transcript_path)
-    
+
     # 7. Document Conversion (Phase 4)
     markdown_path = convert_to_markdown(refined_path)
     latex_path = convert_to_latex(markdown_path)
     convert_to_pdf(latex_path)
-    
+
     # 8. Translation & TTS (Phase 5)
     translated_path = translate_transcript(transcript_path)
     audio_en_path = text_to_speech(translated_path, original_path)
-    
+
     # 9. Final Metadata Update
     metadata['processing'] = {
         'status': 'completed',
@@ -130,52 +133,84 @@ CHINESE_BIBLE_BOOKS = {
     "犹": "Jude", "犹大书": "Jude", "启": "Revelation", "启示录": "Revelation"
 }
 
-def normalize_bible_book(name: str) -> str:
-    """ Maps Chinese Bible book names (or abbreviations) to standard English names. """
-    if not name:
+def extract_preacher(path: str) -> str:
+    prompt = f"""
+    Find the most propable preacher's name from this path:
+    {path}
+    Return ONLY the name in original language.
+    """
+    return (ask_llm(prompt) or "unknown").strip().split('\n')[-1].strip(' "()')
+
+def extract_series(path: str) -> str:
+    prompt = f"""
+    Find the most propable bible book's name from this path:
+    {path}
+    Return ONLY the name in original language.
+    If can't find the bible book, return the possible sermon series name.
+    """
+    return (ask_llm(prompt) or "unknown").strip().split('\n')[-1].strip(' "()')
+
+def extract_title(path: str) -> str:
+    prompt = f"""
+    Find the most sermon title from this path:
+    {path}
+    Return ONLY the title in original language.
+    """
+    return (ask_llm(prompt) or "untitled").strip().split('\n')[-1].strip(' "()')
+
+def extract_scriptures(path: str) -> List[Dict[str, str]]:
+    prompt = f"""
+    Find the specific Bible verses from this file path:
+    {path}
+    Return ONLY a JSON list of objects, each with 'book', 'chapter', and 'verses'.
+    Example: [{{"book": "Ecclesiastes", "chapter": "1", "verses": "1-11"}}]
+    If no verses found, return empty list [].
+    """
+    data = ask_llm(prompt, format='json')
+    if isinstance(data, list):
+        return data
+    return []
+
+def extract_created_at(path: str) -> str:
+    """ Extracts date (YYYYMMDD) from path or filename using LLM. """
+    prompt = f"""
+    Find the most probable creation date or preaching date from this path:
+    {path}
+    Return ONLY the date in YYYYMMDD format.
+    If no date is found, return "unknown".
+    """
+    data = ask_llm(prompt)
+    if not data:
         return "unknown"
-    # Basic cleanup
-    name = name.strip()
-    return CHINESE_BIBLE_BOOKS.get(name, name)
+    # Clean up any potential extra text from LLM
+    match = re.search(r'(\d{8})', data)
+    if match:
+        return match.group(1)
+    return "unknown"
 
 def extract_metadata(path: str) -> Dict[str, Any]:
-    """ Uses local LLM to extract structured metadata from the file path. """
-    prompt = f"""
-    You are an expert in Bible and Christianity knowledge. Scan this file path: "{path}"
+    """ Uses modular extraction calls to gather metadata. """
+    print(f"🔍 Extracting metadata for: {path}")
     
-    TASK: Extract original metadata EXACTLY as it appears in the path. 
-    DO NOT TRANSLATE ANYTHING AT THIS STEP except for the "scriptures.book" field which MUST be standard English.
-
-    GOAL:
-    1. Preacher's Name: Look at parent folders first. Identify who is speaking
-    2. Sermon Title: Find the core title of the message
-    3. Bible Book/Series: Identify the book of the Bible being discussed
-    4. Scriptures: List the specific references
-    Return ONLY a JSON object:
-    {{
-        "preacher": "original name",
-        "series": "original series/bible book name",
-        "sequence": "3-digit sequence string",
-        "scriptures": [{{"book": "English Bible Book", "chapter": int, "verses": "string"}}],
-        "title": "original title",
-        "created_at": "YYYY-MM-DD or unknown"
-    }}
-    """
+    # Extract sequence based on file position in its original folder
+    parent_dir = os.path.dirname(path)
+    all_files = sorted([f for f in os.listdir(parent_dir) if f.lower().endswith('.mp3')])
     
     try:
-        response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt, format='json')
-        data = json.loads(response['response'])
-        
-        # Normalize scriptures
-        if data.get('scriptures'):
-            for s in data['scriptures']:
-                s['book'] = normalize_bible_book(s['book'])
-        
-        data['original_path'] = path
-        return data
-    except Exception as e:
-        print(f"⚠️ Metadata extraction failed for {path}: {e}")
-        return None
+        idx = all_files.index(os.path.basename(path))
+        sequence = str(idx + 1).zfill(3)
+    except ValueError:
+        sequence = "000"
+
+    return {
+        "preacher": extract_preacher(path),
+        "series": extract_series(path),
+        "sequence": sequence,
+        "scriptures": extract_scriptures(path),
+        "title": extract_title(path),
+        "created_at": extract_created_at(path),
+        "original_path": path
+    }
 
 def refine_metadata(metadata: dict) -> dict:
     """ Translates metadata fields to English using Christian context knowledge. """
@@ -189,20 +224,15 @@ def refine_metadata(metadata: dict) -> dict:
     Return JSON object including keys preacher_en, series_en, title_en
     Example:
     {{
-        "preacher_en": "Stephen Tong",
+        "preacher_en": "John Piper",
         "series_en": "Ecclesiastes",
         "title_en": "The Power of God"
     }}
     """
-    try:
-        # Only translate title if we have the rest
-        response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt, format='json')
-        data = json.loads(response['response'])
+    data = ask_llm(prompt, format='json', num_ctx=2048)
+    if data:
         metadata.update(data)
-        return metadata
-    except Exception as e:
-        print(f"⚠️ Metadata refinement failed: {e}")
-        return metadata
+    return metadata
 
 def get_sermon_dir(metadata: dict) -> str:
     """ Generates a unique, slugified directory path for the sermon. """
@@ -211,17 +241,16 @@ def get_sermon_dir(metadata: dict) -> str:
     
     # Use first scripture for slug
     scripture_slug = "unknown"
-    if metadata.get('scriptures'):
+    if metadata.get('scriptures') and isinstance(metadata['scriptures'], list) and len(metadata['scriptures']) > 0:
         s = metadata['scriptures'][0]
-        scripture_slug = f"{s['book']}-{s['chapter']}-{s['verses']}"
-    
+        scripture_slug = f"{s.get('book', 'unknown')}-{s.get('chapter', '0')}-{s.get('verses', '0')}"
+
     sermon_slug = "{}_{}_{}_{}".format(
         slugify(str(metadata.get('sequence', '000'))),
         slugify(metadata.get('title_en') or metadata.get('title', 'untitled')),
         slugify(scripture_slug),
-        slugify(metadata.get('created_at', 'unknown'))
+        slugify(str(metadata.get('created_at', 'unknown')))
     )
-    
     return os.path.join(OUTPUT_ROOT, preacher_slug, series_slug, sermon_slug)
 
 def save_metadata(sermon_dir: str, metadata: dict):
@@ -233,14 +262,11 @@ def save_metadata(sermon_dir: str, metadata: dict):
 def transcript_audio(audio_path: str) -> str:
     from faster_whisper import WhisperModel
     output_path = audio_path.replace('original.mp3', 'transcript_zh.txt')
-    
     if os.path.exists(output_path):
         return output_path
-
     print(f"🎙️ Transcribing: {audio_path}")
     model = WhisperModel("small", device="cpu", compute_type="int8") # Use small/cpu for compatibility
     segments, info = model.transcribe(audio_path, beam_size=5)
-    
     text = ""
     for segment in segments:
         text += f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}\n"
@@ -260,14 +286,12 @@ def refine_transcript(path: str) -> str:
 
     prompt = f"Refine this sermon transcript for punctuation, speaker identification, and pinyin errors. Keep it verbatim but clean it up for reading:\n\n{content[:2000]}" # Limit context
     
-    try:
-        response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt)
+    content_refined = ask_llm(prompt, num_ctx=8192)
+    if content_refined:
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(response['response'])
+            f.write(content_refined)
         return output_path
-    except Exception as e:
-        print(f"⚠️ Refinement failed: {e}")
-        return path
+    return path
 
 def convert_to_markdown(path: str) -> str:
     output_path = path.replace('.txt', '.md')
@@ -339,14 +363,12 @@ def translate_transcript(path: str) -> str:
     chunk = content[:2500]
     prompt = f"Translate the following sermon transcript to English. Ensure theological accuracy and clear flow:\n\n{chunk}"
     
-    try:
-        response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt)
+    translated_text = ask_llm(prompt, num_ctx=4096)
+    if translated_text:
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(response['response'])
+            f.write(translated_text)
         return output_path
-    except Exception as e:
-        print(f"⚠️ Translation failed: {e}")
-        return path
+    return path
 
 def text_to_speech(text_path: str, audio_path: str) -> str:
     output_path = audio_path.replace('original.mp3', 'audio_en.mp3')
@@ -378,6 +400,29 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
         print(f"⚠️ TTS generation failed: {e}. Check if 'TTS' library is properly configured.")
         return None
 
+
+
+def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096) -> Any:
+    """ Centralized helper for Ollama LLM communication. """
+    try:
+        response = ollama.generate(
+            model=DEFAULT_MODEL,
+            prompt=prompt,
+            format=format,
+            options={
+                "num_ctx": num_ctx,
+                "num_thread": 4
+            }
+        )
+        content = response['response']
+        if format == 'json':
+            return json.loads(content)
+        return content
+    except Exception as e:
+        print(f"⚠️ LLM Error: {e}")
+        return None
+
+        
 if __name__ == '__main__':
     # Initial setup checks
     if not os.path.exists(OUTPUT_ROOT):
