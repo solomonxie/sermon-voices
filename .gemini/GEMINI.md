@@ -1,0 +1,9 @@
+- This project is Python-based
+- All commands should reflect in Makefile
+- Must use virtualenv for Python at venv/ , and python executables should be in venv/bin/
+- Prioritize local LLM models
+- Follows TDD approach if possible
+- Any new designs or features should be reflected in README.md or DESIGN.md
+- Don't chmod, if execute something, use something like "bash xx.sh" or "venv/bin/python xx.py"
+- For any README.md in any folder, automatically update it when any change is made
+- Update .gitignore and requirements.txt when related change is made
