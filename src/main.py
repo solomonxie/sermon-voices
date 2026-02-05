@@ -18,98 +18,135 @@ def main():
     """ Main entry point for the sermon processing pipeline. """
     print(f"🚀 Starting sermon processing pipeline...")
 
-    # Ensure raw files are available
+    # Phase 1: Metadata Harvesting
+    print(f"\n--- Phase 1: Metadata Harvesting ---")
     files = glob(os.path.join(BLOBS_ROOT, '**/*.mp3'), recursive=True)
     if not files:
         print(f"⚠️ No MP3 files found in {BLOBS_ROOT}")
-        return
+    else:
+        # Load processed files log
+        processed_files = set()
+        if os.path.exists(PROCESSED_LOG):
+            with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
+                processed_files = set(line.strip() for line in f if line.strip())
 
-    # Load processed files
-    processed_files = set()
-    if os.path.exists(PROCESSED_LOG):
-        with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
-            processed_files = set(line.strip() for line in f if line.strip())
-
-    for path in files:
-        # Check if already processed
-        abs_path = os.path.abspath(path)
-        if abs_path in processed_files:
-            print(f"⏭️  Already in processed log: {path}")
-            continue
-
-        try:
-            process_sermon(path)
-        except Exception as e:
-            print(f"❌ Error processing {path}: {str(e)}")
+        for path in files:
+            abs_path = os.path.abspath(path)
+            if abs_path in processed_files:
+                continue
             
-        # Add to processed log after success
-        with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
-            f.write(f"{abs_path}\n")
-        processed_files.add(abs_path)
+            try:
+                process_metadata(path)
+            except Exception as e:
+                print(f"❌ Error harvesting metadata for {path}: {str(e)}")
 
-def process_sermon(path: str):
-    """ Processes a single sermon file through the full pipeline. """
-    print(f"\n📂 Processing: {path}")
+    # Phase 2: Audio Processing
+    print(f"\n--- Phase 2: Audio Processing ---")
+    metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
+    for metadata_path in metadata_files:
+        try:
+            process_audio(metadata_path)
+        except Exception as e:
+            print(f"❌ Error processing audio for {metadata_path}: {str(e)}")
 
-    # 0. Quick Check for Idempotency (Pre-Extraction)
-    # We can't know the exact folder until we extract, but we can check if it exists in metadata.json cache
-    # For now, we always extract metadata to be sure, unless we implement a central status.json
-
-    # 1. Metadata Extraction
+def process_metadata(path: str):
+    """ Extracts metadata and sets up the directory structure. """
+    print(f"🔍 Harvesting: {path}")
+    
+    # 1. Extraction
     metadata = extract_metadata(path)
     if not metadata:
-        print(f"⏩ Skipping {path}: Could not extract metadata")
         return
 
-    # 1.1 Metadata translation
+    # 1.1 Translation
     metadata = translate_metadata(metadata)
+    
+    # 1.2 Initial Status
+    metadata['status'] = ["ok:metadata"]
 
     # 2. Directory Setup
     sermon_dir = get_sermon_dir(metadata)
-
-    # Check if already processed
-    metadata_path = os.path.join(sermon_dir, 'metadata.json')
-    if os.path.exists(metadata_path):
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            existing = json.load(f)
-            if existing.get('processing', {}).get('status') == 'completed':
-                print(f"⏭️  Already processed: {metadata['title']} (Skipping)")
-                return
-
     os.makedirs(sermon_dir, exist_ok=True)
 
-    # 3. Move Original File
+    # 3. Move/Copy Original File
     original_path = os.path.join(sermon_dir, 'original.mp3')
     if not os.path.exists(original_path):
         shutil.copy2(path, original_path)
-        print(f"📝 Moved to: {sermon_dir}")
-
-    # 4. Save Initial Metadata
+    
+    # 4. Save Metadata
     save_metadata(sermon_dir, metadata)
-    return
 
-    # 5. Transcription (Phase 2)
-    transcript_path = transcript_audio(original_path)
+def process_audio(metadata_path: str):
+    """ Processes audio tasks based on the current status in metadata.json. """
+    with open(metadata_path, 'r', encoding='utf-8') as f:
+        metadata = json.load(f)
+    
+    sermon_dir = os.path.dirname(metadata_path)
+    original_path = os.path.join(sermon_dir, 'original.mp3')
+    status = metadata.get('status', [])
 
-    # 6. Refinement (Phase 3)
-    refined_path = refine_transcript(transcript_path)
+    if not os.path.exists(original_path):
+        print(f"⚠️ Original audio not found for {metadata.get('title')}")
+        return
 
-    # 7. Document Conversion (Phase 4)
-    markdown_path = convert_to_markdown(refined_path)
-    latex_path = convert_to_latex(markdown_path)
-    convert_to_pdf(latex_path)
+    if "ok:metadata" not in status:
+        return # Should not happen if harvester did its job
 
-    # 8. Translation & TTS (Phase 5)
-    translated_path = translate_transcript(transcript_path)
-    audio_en_path = text_to_speech(translated_path, original_path)
+    # Skip if fully completed
+    if "ok:tts" in status:
+        return
 
-    # 9. Final Metadata Update
-    metadata['processing'] = {
-        'status': 'completed',
-        'steps': ['transcribed', 'refined', 'translated', 'tts_generated']
-    }
-    save_metadata(sermon_dir, metadata)
-    print(f"✅ Successfully processed: {metadata['title']}")
+    print(f"\n⚙️ Processing Audio: {metadata.get('title')} ({metadata_path})")
+
+    # 5. Transcription
+    if "ok:transcript" not in status:
+        transcript_path = transcript_audio(original_path)
+        if transcript_path:
+            status.append("ok:transcript")
+            save_metadata(sermon_dir, metadata)
+
+    # 6. Refinement
+    if "ok:refined" not in status and "ok:transcript" in status:
+        transcript_path = os.path.join(sermon_dir, 'transcript_zh.txt')
+        refined_path = refine_transcript(transcript_path)
+        if refined_path and refined_path != transcript_path:
+            status.append("ok:refined")
+            save_metadata(sermon_dir, metadata)
+
+    # 7. Document Conversion
+    if "ok:markdown" not in status and "ok:refined" in status:
+        refined_path = os.path.join(sermon_dir, 'transcript_zh_refined.txt')
+        markdown_path = convert_to_markdown(refined_path)
+        if markdown_path:
+            status.append("ok:markdown")
+            save_metadata(sermon_dir, metadata)
+
+    if "ok:pdf" not in status and "ok:markdown" in status:
+        markdown_path = os.path.join(sermon_dir, 'transcript_zh_refined.md')
+        latex_path = convert_to_latex(markdown_path)
+        convert_to_pdf(latex_path)
+        status.append("ok:pdf")
+        save_metadata(sermon_dir, metadata)
+
+    # 8. Translation
+    if "ok:translation" not in status and "ok:transcript" in status:
+        transcript_path = os.path.join(sermon_dir, 'transcript_zh.txt')
+        translated_path = translate_transcript(transcript_path)
+        if translated_path and translated_path != transcript_path:
+            status.append("ok:translation")
+            save_metadata(sermon_dir, metadata)
+
+    # 9. TTS
+    if "ok:tts" not in status and "ok:translation" in status:
+        translated_path = os.path.join(sermon_dir, 'transcript_zh_en.txt')
+        audio_en_path = text_to_speech(translated_path, original_path)
+        if audio_en_path:
+            status.append("ok:tts")
+            save_metadata(sermon_dir, metadata)
+            # Final Completion: Add to processed log
+            with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
+                f.write(f"{os.path.abspath(metadata['original_path'])}\n")
+            print(f"✅ Fully processed: {metadata['title']}")
 
 def extract_preacher(path: str, model: str = None) -> str:
     hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
@@ -120,7 +157,7 @@ def extract_preacher(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model) or "unknown_preacher"
+    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=50) or "unknown_preacher"
     print(f'\t Preacher: {answer}')
     return answer
 
@@ -135,7 +172,7 @@ def extract_series(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model) or "series0"
+    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=50) or "series0"
     print(f'\t Series: {answer}')
     return answer
 
@@ -150,7 +187,7 @@ def extract_title(path: str, model: str = None) -> str:
     Hints:
     {path}
     """
-    answer = ask_llm(prompt, model=model) or "untitled"
+    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=100) or "untitled"
     print(f'\t Title: {answer}')
     return answer
 
@@ -167,7 +204,7 @@ def extract_scriptures(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model) or "ch0:v0"
+    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=50) or "ch0:v0"
     print(f'\t Scripture: {answer}')
     return answer
 
@@ -185,7 +222,7 @@ def extract_sequence(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model) or ''
+    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=5) or ''
     print(f'\t Sequence: {answer}')
     match = re.search(r'(\d+)', answer)
     if match:
@@ -201,7 +238,7 @@ def extract_created_at(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model) or ''
+    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=8) or ''
     print(f'\t Created at: {answer}')
     match = re.search(r'(\d{8})', answer)
     if match:
@@ -239,7 +276,8 @@ def translate_metadata(metadata: dict) -> dict:
     """
     data = {}
     try:
-        data = ask_llm(prompt, format='json')
+        answer = ask_llm(prompt, num_ctx=2048, cap=256)
+        data = json.loads(answer)
     except Exception as e:
         print(f"⚠️ JSON parsing error: {e}")
     metadata['preacher_en'] = data.get('preacher_en')
@@ -375,8 +413,7 @@ def translate_transcript(path: str) -> str:
     Translate the following sermon transcript to English. Ensure biblical and theological accuracy and clear flow:
     {chunk}
     """
-
-    translated_text = ask_llm(prompt)
+    translated_text = ask_llm(prompt, num_ctx=8192)
     if translated_text:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(translated_text)
@@ -419,7 +456,7 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
 
 
 
-def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> Any:
+def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0, cap: int = None) -> str:
     """ Centralized helper for Ollama LLM communication. """
     try:
         response = ollama.generate(
@@ -437,9 +474,8 @@ def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = N
         content = response['response']
         # Remove <think>...</think> tags
         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-        
-        if format == 'json':
-            return json.loads(content)
+        if cap:
+            assert len(content) <= cap, f'LLM response is too long: {len(content)} > {cap}'
         return content
     except Exception as e:
         print(f"⚠️ LLM Error with model {model or DEFAULT_MODEL}: {e}")
