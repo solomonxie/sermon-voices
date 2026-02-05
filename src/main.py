@@ -274,12 +274,7 @@ def translate_metadata(metadata: dict) -> dict:
     Content:
     {metadata}
     """
-    data = {}
-    try:
-        answer = ask_llm(prompt, num_ctx=2048, cap=256)
-        data = json.loads(answer)
-    except Exception as e:
-        print(f"⚠️ JSON parsing error: {e}")
+    data = ask_llm(prompt, num_ctx=2048, cap=256, format='json')
     metadata['preacher_en'] = data.get('preacher_en')
     metadata['series_en'] = data.get('series_en')
     metadata['title_en'] = data.get('title_en')
@@ -456,7 +451,7 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
 
 
 
-def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0, cap: int = None) -> str:
+def ask_llm(prompt: str, format: str=None, num_ctx: int = 4096, model: str = None, temperature: float = 0.0, cap: int = None) -> str|dict:
     """ Centralized helper for Ollama LLM communication. """
     try:
         response = ollama.generate(
@@ -464,8 +459,9 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
             prompt=prompt,
             format=format,
             options={
-                "num_ctx": num_ctx,
                 "temperature": temperature,
+                "show_think": False,
+                "num_ctx": num_ctx,
                 # "num_thread": 4,
                 # Ollama on M1/Metal handles GPU acceleration automatically.
                 # Removing num_thread allows the server to optimize for hardware.
@@ -476,10 +472,12 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
         if cap:
             assert len(content) <= cap, f'LLM response is too long: {len(content)} > {cap}'
+        if format == 'json':
+            return json.loads(content)
         return content
     except Exception as e:
         print(f"⚠️ LLM Error with model {model or DEFAULT_MODEL}: {e}")
-        return {}
+        return ""
 
 
 if __name__ == '__main__':
