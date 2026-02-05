@@ -134,37 +134,44 @@ CHINESE_BIBLE_BOOKS = {
 }
 
 def extract_preacher(path: str) -> str:
+    hints = '\n'.join(path.split('/'))
     prompt = f"""
-    Find the most propable preacher's name from this path:
-    {path}
-    Return ONLY the name in original language.
+    Find the most propable preacher's name from the given path.
+    Return ONLY the original name. Don't translate and don't respond any other then name.
+    {hints}
     """
     return (ask_llm(prompt) or "unknown").strip().split('\n')[-1].strip(' "()')
 
 def extract_series(path: str) -> str:
+    hints = '\n'.join(path.split('/'))
     prompt = f"""
-    Find the most propable bible book's name from this path:
-    {path}
-    Return ONLY the name in original language.
+    Find the most propable bible book's name from the given hints:
     If can't find the bible book, return the possible sermon series name.
+    Return ONLY the original name, don't respond any other than a name.
+    Hints:
+    {hints}
     """
     return (ask_llm(prompt) or "unknown").strip().split('\n')[-1].strip(' "()')
 
 def extract_title(path: str) -> str:
+    hints = '\n'.join(path.split('/'))
     prompt = f"""
-    Find the most sermon title from this path:
+    Find the most sermon title from the given hints.
+    Return ONLY the title in original language, don't respond any other than a title.
+    Hints:
     {path}
-    Return ONLY the title in original language.
     """
     return (ask_llm(prompt) or "untitled").strip().split('\n')[-1].strip(' "()')
 
 def extract_scriptures(path: str) -> List[Dict[str, str]]:
+    hints = '\n'.join(path.split('/'))
     prompt = f"""
-    Find the specific Bible verses from this file path:
-    {path}
+    Find the specific Bible verses from the given hints.
     Return ONLY a JSON list of objects, each with 'book', 'chapter', and 'verses'.
     Example: [{{"book": "Ecclesiastes", "chapter": "1", "verses": "1-11"}}]
     If no verses found, return empty list [].
+    Hints:
+    {hints}
     """
     data = ask_llm(prompt, format='json')
     if isinstance(data, list):
@@ -173,11 +180,13 @@ def extract_scriptures(path: str) -> List[Dict[str, str]]:
 
 def extract_created_at(path: str) -> str:
     """ Extracts date (YYYYMMDD) from path or filename using LLM. """
+    hints = '\n'.join(path.split('/'))
     prompt = f"""
-    Find the most probable creation date or preaching date from this path:
-    {path}
+    Find the most probable creation date or preaching date from the given hints.
     Return ONLY the date in YYYYMMDD format.
     If no date is found, return "unknown".
+    Hints:
+    {path}
     """
     data = ask_llm(prompt)
     if not data:
