@@ -62,10 +62,14 @@ make process
 sermon-voices/
 ├── blobs/                  # Input raw files (chaotic structure OK)
 ├── output/
-│   ├── audio/              # Organized, slugified sermon outputs
-│   │   └── <preacher_en>/
-│   │       └── <series_en>/
-│   │           └── <sermon_slug>/
+│   ├── <preacher_en>/      # Organized, slugified preacher folder
+│   │   └── <series_en>/    # Series folder
+│   │       └── <sermon_slug>/ # All assets for one sermon
+│   │           ├── original.mp3
+│   │           ├── metadata.json
+│   │           ├── transcript_zh.txt
+│   │           ├── audio_en.mp3
+│   │           └── sermon.pdf
 │   └── processing_status.json # Pipeline state and file hashes
 ├── src/                    # Core Python pipeline
 └── scripts/                # Utility scripts
