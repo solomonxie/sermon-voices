@@ -29,12 +29,10 @@ def main():
         if os.path.exists(PROCESSED_LOG):
             with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
                 processed_files = set(line.strip() for line in f if line.strip())
-
         for path in files:
             abs_path = os.path.abspath(path)
             if abs_path in processed_files:
                 continue
-            
             try:
                 process_metadata(path)
             except Exception as e:
@@ -76,6 +74,11 @@ def process_metadata(path: str):
     
     # 4. Save Metadata
     save_metadata(sermon_dir, metadata)
+
+    # 5. Add to processed log (Phase 1 complete)
+    with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
+        f.write(f"{os.path.abspath(metadata['original_path'])}\n")
+    print(f"✅ Metadata harvested and logged: {metadata['title']}")
 
 
 def process_audio(metadata_path: str):
@@ -145,22 +148,22 @@ def process_audio(metadata_path: str):
         if audio_en_path:
             status.append("ok:tts")
             save_metadata(sermon_dir, metadata)
-            # Final Completion: Add to processed log
-            with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
-                f.write(f"{os.path.abspath(metadata['original_path'])}\n")
-            print(f"✅ Fully processed: {metadata['title']}")
+            print(f"✅ Audio processing complete: {metadata['title']}")
 
 
 def extract_preacher(path: str, model: str = None) -> str:
     hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
     prompt = f"""
     Find the most probable preacher's name from the given path.
-    Return ONLY the name in its ORIGINAL language as found in the path.
-    DO NOT translate. DO NOT add any explanation. If unknown, return "unknown_preacher"
+    Return JSON with ONLY the name in its ORIGINAL language as found in the path.
+    DO NOT translate. DO NOT add any explanation.
+    Example input: "blobs/唐崇荣/《唐崇荣-约翰福音》/约翰福音第01讲.mp3"
+    Example output: {{"preacher": "唐崇荣"}}
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048) or "unknown_preacher"
+    resp = ask_llm(prompt, model=model, num_ctx=1024)
+    answer = resp.get('preacher') or "unknown_preacher"
     print(f'\t Preacher: {answer}')
     return answer[-50:]
 
@@ -169,14 +172,15 @@ def extract_series(path: str, model: str = None) -> str:
     hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
     prompt = f"""
     Find the most probable Bible book or sermon series name from the given hints.
-    Return ONLY the name in its ORIGINAL language as found in the path.
-    DO NOT translate. DO NOT add any explanation. If unknown, return "series0"
+    Return JSON with ONLY the name in its ORIGINAL language as found in the path.
+    DO NOT translate. DO NOT add any explanation.
     Example input: "blobs/唐崇荣/《唐崇荣-约翰福音》/约翰福音第01讲.mp3"
-    Example output: "约翰福音"
+    Example output: {{"series": "约翰福音"}}
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048) or "series0"
+    resp = ask_llm(prompt, model=model, num_ctx=1024)
+    answer = resp.get('series') or "series0"
     print(f'\t Series: {answer}')
     return answer[-50:]
 
@@ -185,51 +189,54 @@ def extract_title(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
     prompt = f"""
     Find the specific sermon title from the given hints.
-    Return ONLY the title in its ORIGINAL language as found in the path.
-    DO NOT translate. DO NOT add any explanation. If unknown, return "untitled"
+    Return JSON with ONLY the title in its ORIGINAL language as found in the path.
+    DO NOT translate. DO NOT add any explanation.
     Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
-    Example output: "烧荆棘的爆声"
+    Example output: {{"title": "烧荆棘的爆声"}}
     Hints:
     {path}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048) or "untitled"
+    resp = ask_llm(prompt, model=model, num_ctx=1024)
+    answer = resp.get('title') or "untitled"
     print(f'\t Title: {answer}')
-    return answer[-100:]
+    return answer[-50:]
 
 
-def extract_scriptures(path: str, model: str = None) -> str:
+def extract_scripture(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
     prompt = f"""
     Find the specific Bible verses from the given hints.
-    Return the result in the format: "Book chX:vY" (English book name).
-    If multiple, return comma separated.
-    If no specific verses found, return "ch0:v0".
+    Return JSON with the result in English in the format:
+    {{"scripture": "Bible Book chX:vY"}} .
+    If not certain, return {{"scripture": "Unknown Book ch0:v0"}}
     DO NOT return JSON. DO NOT add any explanation.
-    Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
-    Example output: "Ecclesiastes ch7:v6"
+    Example input: "20230621传道书042（7章6节）.mp3"
+    Example output:
+    {{"scripture": "Ecclesiastes ch7:v6"}}
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048) or "ch0:v0"
+    resp = ask_llm(prompt, model=model, num_ctx=1024)
+    answer = resp.get('scripture') or 'ch0:v0'
     print(f'\t Scripture: {answer}')
-    return answer[-50:]
+    return answer[-20:]
 
 
 def extract_sequence(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
     prompt = f"""
     Find the sequence number or lecture number of the sermon from the given hints.
-    Return ONLY the sequence number padded to 3 digits (e.g., 001, 042).
     If no sequence is found, return "000".
-    DO NOT add any explanation.
+    DO NOT add any explanation, only return answer.
     Example input: "约翰福音第01讲.mp3"
-    Example output: "001"
+    Example output: {{"sequence": "1"}}
     Example input: "20230621传道书99.mp3"
-    Example output: "099"
+    Example output: {{"sequence": "99"}}
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048) or ''
+    resp = ask_llm(prompt, model=model, num_ctx=1024)
+    answer = resp.get('sequence') or ''
     print(f'\t Sequence: {answer}')
     match = re.search(r'(\d+)', answer[-10:])
     if match:
@@ -242,11 +249,15 @@ def extract_created_at(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
     prompt = f"""
     Find the most probable creation date or preaching date from the given hints.
-    Return ONLY the date in YYYYMMDD format. If not known, then respond "00000000"
+    Return JSON with ONLY the date in YYYYMMDD format.
+    If not certain, return {{"created_at": "00000000"}}
+    Example input: "2023.06.21传道书01.mp3"
+    Example output: {{"created_at": "20230621"}}
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048) or ''
+    resp = ask_llm(prompt, model=model, num_ctx=1024)
+    answer = resp.get('created_at') or ''
     print(f'\t Created at: {answer}')
     match = re.search(r'(\d{8})', answer[-50:])
     if match:
@@ -261,7 +272,7 @@ def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
         "preacher": extract_preacher(path, model=model),
         "series": extract_series(path, model=model),
         "sequence": extract_sequence(path, model=model),
-        "scriptures": extract_scriptures(path, model=model),
+        "scripture": extract_scripture(path, model=model),
         "title": extract_title(path, model=model),
         "created_at": extract_created_at(path, model=model),
         "original_path": path
@@ -283,15 +294,10 @@ def translate_metadata(metadata: dict) -> dict:
     Content:
     {metadata}
     """
-    answer = ask_llm(prompt, num_ctx=2048, format_validation='json')
-    try:
-        data = json.loads(answer)
-    except Exception as e:
-        print(f'Failed to load answer: {answer}\n{e}')
-        raise e
-    metadata['preacher_en'] = data.get('preacher_en')
-    metadata['series_en'] = data.get('series_en')
-    metadata['title_en'] = data.get('title_en')
+    resp = ask_llm(prompt, num_ctx=2048)
+    metadata['preacher_en'] = resp.get('preacher_en')
+    metadata['series_en'] = resp.get('series_en')
+    metadata['title_en'] = resp.get('title_en')
     return metadata
 
 
@@ -299,8 +305,8 @@ def get_sermon_dir(metadata: dict) -> str:
     """ Generates a unique, slugified directory path for the sermon. """
     preacher_slug = slugify(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown_preacher')
     series_slug = slugify(metadata.get('series_en') or metadata.get('series') or 'unamed_series')
-    # Use scriptures string for slug
-    scripture_slug = slugify(metadata.get('scriptures') or 'scripture0')
+    # Use scripture string for slug
+    scripture_slug = slugify(metadata.get('scripture') or 'scripture0')
     sermon_slug = "{}_{}_{}_{}".format(
         slugify(str(metadata.get('sequence', '000'))),
         slugify(metadata.get('title_en') or metadata.get('title', 'untitled')),
@@ -458,16 +464,16 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
         return None
 
 
-def ask_llm(prompt: str, format_validation: str=None, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> str:
+def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> dict:
     """ Centralized helper for Ollama LLM communication. """
     try:
         response = ollama.generate(
             model=model or DEFAULT_MODEL,
             prompt=prompt,
-            format=format_validation,
+            format='json',
             options={
                 "temperature": temperature,
-                "show_think": False,
+                "show_think": True,
                 "num_ctx": num_ctx,
                 # "num_thread": 4,
                 # Ollama on M1/Metal handles GPU acceleration automatically.
@@ -480,7 +486,12 @@ def ask_llm(prompt: str, format_validation: str=None, num_ctx: int = 4096, model
     content = response['response']
     # Remove <think>...</think> tags
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-    return content
+    try:
+        data = json.loads(content)
+    except Exception as e:
+        print(f'Failed to load answer to json: {content}\n{e}')
+        raise e
+    return data
 
 
 if __name__ == '__main__':
