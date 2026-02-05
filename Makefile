@@ -1,7 +1,7 @@
 # Sermon Voices - Makefile
 # User-friendly wrapper for common commands
 
-.PHONY: help setup setup-cpp setup-python setup-ollama build rebuild debug clean clean-output process process-one serve test test-audio test-transcript test-translate test-tts check-deps models-info format lint watch
+.PHONY: help setup setup-python setup-ollama clean-output process extract-metadata reorganize-files check-deps models-info
 
 # Default target
 .DEFAULT_GOAL := help
@@ -40,17 +40,6 @@ help: ## Show all available commands with descriptions
 
 setup: setup-python setup-ollama ## Install all dependencies (Python packages, Ollama models)
 	@echo "$(GREEN)✓ Setup complete!$(NC)"
-	@echo "Next steps:"
-	@echo "  1. Run 'make extract-metadata' to scan original blobs"
-	@echo "  2. Run 'make reorganize-files' to structure the audio files"
-	@echo "  3. Run 'make process' to start the pipeline"
-
-setup: setup-python setup-ollama ## Install all dependencies (Python packages, Ollama models)
-	@echo "$(GREEN)✓ Setup complete!$(NC)"
-	@echo "Next steps:"
-	@echo "  1. Run 'make extract-metadata' to scan original blobs"
-	@echo "  2. Run 'make reorganize-files' to structure the audio files"
-	@echo "  3. Run 'make process' to start the pipeline"
 
 setup-python: ## Create venv and install Python dependencies
 	@echo "$(BLUE)Setting up Python environment...$(NC)"
@@ -68,17 +57,16 @@ setup-ollama: ## Download Ollama models (llama3)
 		echo "$(RED)ERROR: Ollama not installed. Install with: brew install ollama$(NC)"; \
 		exit 1; \
 	fi
-	@echo "Pulling llama3 model (this may take a few minutes)..."
+	@echo "Pulling llama3 model..."
 	@ollama pull llama3
 	@echo "$(GREEN)✓ Ollama models ready$(NC)"
 
 clean-output: ## Clean all generated outputs
-	@echo "$(YELLOW)WARNING: This will delete all generated transcripts, translations, and audio!$(NC)"
+	@echo "$(YELLOW)WARNING: This will delete all generated outputs!$(NC)"
 	@read -p "Are you sure? [y/N] " -n 1 -r; \
 	echo; \
 	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		rm -rf output/transcripts/* output/translations/* output/audio/* output/markdown/* output/pdf/* output/latex/* output/text/*; \
-		rm -f output/processing_status.json; \
+		rm -rf output/*; \
 		echo "$(GREEN)✓ Output cleaned$(NC)"; \
 	else \
 		echo "Cancelled."; \
@@ -88,47 +76,19 @@ clean-output: ## Clean all generated outputs
 # Run Commands
 # ============================================================================
 
-process: ## Run the full processing pipeline (scan all metadata)
-	@echo "$(BLUE)Scanning sermons...$(NC)"
-	@PYTHONPATH=. $(PYTHON_VENV) scripts/manage.py scan
+process: setup-python ## Run the full processing pipeline
+	@echo "$(BLUE)Starting full pipeline...$(NC)"
+	@PYTHONPATH=src $(PYTHON_VENV) src/main.py
 
-extract-metadata: setup-python ## Extract metadata from all MP3 files
+extract-metadata: setup-python ## Extract metadata from blobs/ using LLM
 	@echo "$(BLUE)Extracting metadata...$(NC)"
-	@PYTHONPATH=. $(PYTHON_VENV) scripts/manage.py extract --llm
+	@PYTHONPATH=src $(PYTHON_VENV) src/main.py --mode extract
 	@echo "$(GREEN)✓ Metadata extraction complete$(NC)"
 
-reorganize-files: setup-python ## Reorganize files based on metadata
+reorganize-files: setup-python ## Reorganize files based on extracted metadata
 	@echo "$(BLUE)Reorganizing files...$(NC)"
-	@PYTHONPATH=. $(PYTHON_VENV) scripts/manage.py reorganize $(if $(NO_DRY_RUN),--no-dry-run,)
+	@PYTHONPATH=src $(PYTHON_VENV) src/main.py --mode reorganize
 	@echo "$(GREEN)✓ File reorganization complete$(NC)"
-
-# ============================================================================
-# Test Commands
-# ============================================================================
-
-test: build ## Run all tests
-	@echo "$(BLUE)Running tests...$(NC)"
-	@if [ -f "$(BUILD_DIR)/tests/sermon_voices_tests" ]; then \
-		$(BUILD_DIR)/tests/sermon_voices_tests; \
-	else \
-		echo "$(YELLOW)No tests built yet.$(NC)"; \
-	fi
-
-test-audio: ## Test audio extraction only
-	@echo "$(BLUE)Testing audio extraction...$(NC)"
-	@echo "$(YELLOW)Not implemented yet$(NC)"
-
-test-transcript: ## Test transcription only
-	@echo "$(BLUE)Testing transcription...$(NC)"
-	@echo "$(YELLOW)Not implemented yet$(NC)"
-
-test-translate: ## Test translation only
-	@echo "$(BLUE)Testing translation...$(NC)"
-	@echo "$(YELLOW)Not implemented yet$(NC)"
-
-test-tts: ## Test TTS generation only
-	@echo "$(BLUE)Testing TTS...$(NC)"
-	@echo "$(YELLOW)Not implemented yet$(NC)"
 
 # ============================================================================
 # Utility Commands
@@ -137,47 +97,19 @@ test-tts: ## Test TTS generation only
 check-deps: ## Verify all dependencies are installed
 	@echo "$(BLUE)Checking dependencies...$(NC)"
 	@echo -n "Python: "
-	@if command -v $(PYTHON) &> /dev/null; then \
-		echo "$(GREEN)✓ $(shell $(PYTHON) --version)$(NC)"; \
-	else \
-		echo "$(RED)✗ Not found$(NC)"; \
-	fi
+	@command -v $(PYTHON) &> /dev/null && echo "$(GREEN)✓ $(shell $(PYTHON) --version)$(NC)" || echo "$(RED)✗ Not found$(NC)"
 	@echo -n "FFmpeg: "
-	@if command -v ffmpeg &> /dev/null; then \
-		echo "$(GREEN)✓ $(shell ffmpeg -version | head -n1 | cut -d' ' -f3)$(NC)"; \
-	else \
-		echo "$(RED)✗ Not found (install with: brew install ffmpeg)$(NC)"; \
-	fi
+	@command -v ffmpeg &> /dev/null && echo "$(GREEN)✓ $(NC)" || echo "$(RED)✗ Not found$(NC)"
 	@echo -n "Ollama: "
-	@if command -v ollama &> /dev/null; then \
-		echo "$(GREEN)✓ $(shell ollama --version)$(NC)"; \
-	else \
-		echo "$(RED)✗ Not found (install with: brew install ollama)$(NC)"; \
-	fi
-	@echo -n "Python venv: "
-	@if [ -d "$(VENV_DIR)" ]; then \
-		echo "$(GREEN)✓ Active$(NC)"; \
-	else \
-		echo "$(RED)✗ Not created (run: make setup-python)$(NC)"; \
-	fi
+	@command -v ollama &> /dev/null && echo "$(GREEN)✓ $(NC)" || echo "$(RED)✗ Not found$(NC)"
 
 models-info: ## Show info about downloaded models
-	@echo "$(BLUE)Checking models...$(NC)"
-	@echo ""
 	@echo "$(GREEN)Ollama Models:$(NC)"
 	@ollama list || echo "$(RED)Ollama not running$(NC)"
 	@echo ""
 	@echo "$(GREEN)Python Packages:$(NC)"
 	@if [ -d "$(VENV_DIR)" ]; then \
-		$(PIP) list | grep -E '(whisper|TTS|ollama)'; \
+		$(PIP) list | grep -E '(whisper|TTS|ollama|slugify)'; \
 	else \
 		echo "$(RED)Virtual environment not created$(NC)"; \
 	fi
-
-watch: ## Auto-rebuild on file changes (requires fswatch)
-	@if ! command -v fswatch &> /dev/null; then \
-		echo "$(RED)ERROR: fswatch not installed. Install with: brew install fswatch$(NC)"; \
-		exit 1; \
-	fi
-	@echo "$(BLUE)Watching for changes...$(NC)"
-	@fswatch -o src include | xargs -n1 -I{} make build

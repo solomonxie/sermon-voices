@@ -2,461 +2,112 @@
 
 ## Architecture Overview
 
-This is a hybrid C++/Python application designed to process sermon audio/video files with AI-powered transcription, translation, voice-cloning TTS, and organized file output for object storage (S3/MinIO).
+Sermon Voices is a high-performance pipeline designed to process sermon audio/video files with AI-powered transcription, translation, and organized file output. While the long-term vision includes a hybrid C++/Python coordination layer for massive scale and system integration, the current core workflow is driven by a flexible Python-based pipeline for maximum agility with modern ML tools.
 
-### Why Hybrid C++/Python?
+### Pipeline Philosophy
 
-**C++ Components (for learning and structure)**:
-- Main application orchestration and pipeline control
-- Project structure and organization
-- Build system (CMake)
-- File I/O and data management
-- JSON processing and metadata generation
-- Process management
-- Output organization for object storage
+1.  **Local-First Processing**: 100% of processing occurs on local hardware (optimized for M1/Apple Silicon). No cloud APIs are used, ensuring privacy and cost-efficiency.
+2.  **LLM-Driven Metadata**: Instead of fragile regex-based parsing, we use local LLMs (via Ollama) to extract structured metadata from file paths and names.
+3.  **Idempotent Execution**: The system uses a state tracking mechanism (JSON-based) and content hashing to ensure that re-running the pipeline only processes new or changed files.
+4.  **Organized Slugified Output**: All outputs are organized into a clean, English-slugified directory structure suitable for object storage indexing.
 
-**Python Components (for best ML tools)**:
-- Whisper transcription (faster-whisper)
-- Coqui XTTS v2 for TTS + voice cloning
-- Ollama client for translation
+### Core Workflow
 
-**Integration Method**:
-- C++ launches Python scripts via subprocess (popen/system)
-- Data exchange via JSON files
-- Clean separation: C++ orchestrates, Python executes ML inference
-
-**Output Philosophy**:
-- All outputs organized in structured directories
-- Each sermon gets a metadata.json file
-- Ready for upload to object storage (S3, MinIO, etc.)
-- No web server - pure file-based output
-
-## Core Components
-
-### 1. Sermon Class (`sermon.hpp/cpp`)
-Represents a single sermon with metadata.
-
-**Fields**:
-- `std::string path` - Original file path
-- `std::string author` - Extracted from directory structure
-- `std::chrono::system_clock::time_point datetime` - Parsed from filename
-- `Transcript transcript` - Timestamped transcript
-- `std::map<std::string, Transcript> translations` - Per-language translations
-- `std::map<std::string, std::string> audio_outputs` - Generated TTS audio paths
-
-**Methods**:
-- `to_json()` - Serialize to JSON
-- `from_json()` - Deserialize from JSON
-
-### 2. StatusTracker (`status_tracker.hpp/cpp`)
-Manages processing state persistence.
-
-**Purpose**: Tracks which sermons have been processed and their current state.
-
-**Storage**: `output/processing_status.json`
-
-**Status Schema**:
-```json
-{
-  "blobs/john_piper/2024-01-15_10-30-00.mp3": {
-    "status": "completed",
-    "last_updated": "2024-01-15T14:30:00Z",
-    "steps_completed": ["audio_extract", "transcribe", "translate_en", "tts_en"],
-    "error": null
-  }
-}
+```mermaid
+graph TD
+    A[Blobs/ - Raw Files] --> B[Metadata Extraction - LLM]
+    B --> C[File Reorganization - Slugified]
+    C --> D[Transcription - Whisper]
+    D --> E[Transcript Refinement - Ollama]
+    E --> F[Translation - Ollama]
+    F --> G[TTS / Voice Cloning - XTTSv2]
+    G --> H[Document Generation - MD/PDF/LaTeX]
+    H --> I[Metadata.json Generation]
+    I --> J[Output/ - Structured Storage]
 ```
 
-**Methods**:
-- `get_status(path)` - Get current status
-- `set_status(path, status)` - Update status
-- `mark_step_complete(path, step)` - Mark pipeline step done
-- `mark_failed(path, error)` - Record failure
-- `get_pending_sermons()` - List unprocessed files
+## Metadata & Tracking
 
-### 3. SermonScanner (`sermon_scanner.hpp/cpp`)
-Discovers sermon files in the `blobs/` directory.
+### 1. Content Hashing
+To prevent redundant processing, every file in the `blobs/` directory is hashed. The hash is stored in the processing status to track if a file has been modified even if its name remains the same.
 
-**Functionality**:
-- Recursively scan `blobs/` directory
-- Parse filename format: `<author>/<YYYY-MM-DD_HH-MM-SS>.<ext>`
-- Extract metadata (author, datetime)
-- Filter by supported formats (mp3, mp4, m4a, wav, etc.)
-- Return list of Sermon objects
+### 2. Metadata Schema (metadata.json)
 
-**Supported Formats**: mp3, mp4, m4a, wav, flac, ogg, webm
+The central source of truth for each sermon file.
 
-### 4. AudioProcessor (`audio_processor.hpp/cpp`)
-Handles audio extraction and conversion.
-
-**Responsibilities**:
-- Extract audio from video files using FFmpeg
-- Convert to standard format (WAV, 16kHz, mono)
-- Audio validation and metadata extraction
-
-**FFmpeg Integration**: Calls via system() or popen()
-
-### 5. Transcriber (`transcriber.hpp/cpp`)
-C++ wrapper for Python whisper transcription.
-
-**Process**:
-1. Launch subprocess: `python3 python/transcribe.py --input audio.wav --output transcript.json`
-2. Monitor subprocess progress
-3. Parse JSON output with timestamped segments
-4. Handle errors and timeouts
-
-**Output Format**:
 ```json
 {
-  "segments": [
-    {"start": 0.0, "end": 5.2, "text": "Welcome to today's sermon"},
-    {"start": 5.2, "end": 10.8, "text": "We will discuss..."}
-  ]
-}
-```
-
-### 6. Translator (`translator.hpp/cpp`)
-C++ wrapper for Ollama-based translation.
-
-**Two Implementation Options**:
-1. Direct HTTP calls to Ollama API (localhost:11434) - pure C++
-2. Call Python script with Ollama client - simpler
-
-**Process**:
-- Preserve timestamp information from transcript
-- Batch translate segments
-- Progress tracking
-- Error handling for API failures
-
-**Output**: JSON with translated segments maintaining timestamps
-
-### 7. VoiceCloner (`voice_cloner.hpp/cpp`)
-Manages voice sample extraction and profile creation.
-
-**Workflow**:
-1. Extract voice sample from original sermon (10-30 seconds)
-2. Call Python XTTS to create voice profile
-3. Store voice profiles for reuse per author
-4. Validate sample quality (duration, clarity)
-
-**Storage**: `voice_samples/<author>/profile.json`
-
-### 8. TTSEngine (`tts_engine.hpp/cpp`)
-C++ wrapper for Coqui XTTS Python scripts.
-
-**Process**:
-1. Load voice profile for author
-2. Generate TTS with cloned voice for each language
-3. Handle long text splitting (XTTS has character limits)
-4. Subprocess management with progress tracking
-5. Generate audio with timestamp alignment
-
-**Output**: MP3/WAV files per language in `output/audio/<author>/<lang>/`
-
-### 9. DocumentGenerator (`document_generator.hpp/cpp`)
-Creates formatted output documents.
-
-**Formats**:
-- **Markdown**: Simple formatting with timestamps and parallel text
-- **PDF**: Shell out to pandoc or wkhtmltopdf
-- **LaTeX**: Generate .tex source files
-- **Plain Text**: Simple text format for each language
-
-**Features**:
-- Include metadata headers (author, date, languages)
-- Bilingual parallel text display
-- Timestamp references
-
-### 10. MetadataGenerator (`metadata_generator.hpp/cpp`)
-Generates comprehensive metadata.json for each sermon.
-
-**Purpose**: Create structured metadata for object storage indexing and retrieval.
-
-**Metadata Schema**:
-```json
-{
-  "sermon_id": "john_piper_2024-01-15_10-30-00",
-  "author": "john_piper",
-  "title": "Grace and Truth",
-  "date": "2024-01-15T10:30:00Z",
-  "original_file": "blobs/john_piper/2024-01-15_10-30-00.mp3",
-  "duration_seconds": 2400,
-  "file_size_bytes": 45678900,
-  "languages": ["en", "zh", "es", "ko"],
-  "processing": {
-    "transcribed_at": "2024-01-15T14:00:00Z",
-    "translated_at": "2024-01-15T14:30:00Z",
-    "tts_generated_at": "2024-01-15T15:00:00Z"
+  "id": "stephen-tong_romans_001_16-17_20240115",
+  "content_hash": "sha256:7e9a...",
+  "preacher": {
+    "original": "唐崇荣",
+    "en_slug": "stephen-tong"
   },
-  "files": {
-    "original_audio": "original/audio.mp3",
-    "transcripts": {
-      "en": "transcripts/en.json",
-      "zh": "transcripts/zh.json"
-    },
-    "audio": {
-      "en": "audio/en.mp3",
-      "zh": "audio/zh.mp3"
-    },
-    "documents": {
-      "markdown": "docs/sermon.md",
-      "pdf": "docs/sermon.pdf",
-      "text": "docs/sermon.txt"
+  "series": {
+    "original": "罗马书",
+    "en_slug": "romans"
+  },
+  "title": {
+    "original": "上帝的大能",
+    "en_slug": "the-power-of-god"
+  },
+  "sequence": "001",
+  "scriptures": [
+    {
+      "book": "Romans",
+      "chapter": 1,
+      "verses": "16-17"
     }
+  ],
+  "created_at": "2024-01-15",
+  "audio_metadata": {
+    "duration": 1845,
+    "bitrate": 128
   },
-  "tags": ["gospel", "grace", "theology"],
-  "series": "Gospel of Luke"
-}
-```
-
-**Methods**:
-- `generate_metadata(sermon)` - Create metadata.json
-- `update_metadata(sermon_id, field, value)` - Update specific fields
-- `validate_metadata(json)` - Ensure schema compliance
-
-## Data Flow
-
-```
-Input: blobs/<author>/<datetime>.<ext>
-  |
-  v
-SermonScanner -> List of Sermon objects
-  |
-  v
-StatusTracker -> Filter to pending/incomplete
-  |
-  v
-For each sermon:
-  |
-  +-> AudioProcessor -> Extracted audio
-  |
-  +-> Transcriber -> Timestamped transcript
-  |
-  +-> VoiceCloner -> Voice profile
-  |
-  +-> Translator (for each language) -> Translated transcript
-  |
-  +-> TTSEngine (for each language) -> Generated audio
-  |
-  +-> DocumentGenerator -> Markdown, PDF, LaTeX, Text
-  |
-  +-> MetadataGenerator -> metadata.json
-  |
-  v
-Output: Organized directory structure
-  |
-  v
-Ready for object storage upload (S3/MinIO)
-```
-
-## Output Directory Structure
-
-Each sermon gets its own directory with all associated files:
-
-```
-output/
-├── sermons/
-│   └── <author>/
-│       └── <sermon_id>/
-│           ├── metadata.json           # Complete sermon metadata
-│           ├── original/
-│           │   └── audio.mp3           # Original audio file
-│           ├── transcripts/
-│           │   ├── original.json       # Original language transcript
-│           │   ├── en.json             # English transcript
-│           │   ├── zh.json             # Chinese transcript
-│           │   ├── es.json             # Spanish transcript
-│           │   └── ko.json             # Korean transcript
-│           ├── audio/
-│           │   ├── en.mp3              # English TTS audio
-│           │   ├── zh.mp3              # Chinese TTS audio
-│           │   ├── es.mp3              # Spanish TTS audio
-│           │   └── ko.mp3              # Korean TTS audio
-│           └── documents/
-│               ├── sermon.md           # Markdown format
-│               ├── sermon.pdf          # PDF format
-│               ├── sermon.tex          # LaTeX source
-│               ├── en.txt              # English text
-│               ├── zh.txt              # Chinese text
-│               ├── es.txt              # Spanish text
-│               └── ko.txt              # Korean text
-│
-└── index.json                          # Global index of all sermons
-```
-
-### Object Storage Mapping
-
-This structure maps directly to S3/MinIO:
-- Bucket: `sermon-voices`
-- Prefix: `sermons/<author>/<sermon_id>/`
-- Each file has its own object key
-- metadata.json enables search and indexing
-- index.json provides global catalog
-
-## Processing Model: Simple & Idempotent
-
-### Key Principle
-No job queue, no daemon. Just run `make process` and it processes everything that needs processing.
-
-### Status Tracking
-`output/processing_status.json` tracks all sermons and their processing state.
-
-### Workflow
-1. **Scan**: Find all files in `blobs/`
-2. **Check**: Load status file
-3. **Filter**: Identify pending/incomplete/failed
-4. **Process**: Sequential processing with status updates
-5. **Resume**: Can be safely re-run anytime
-
-### Benefits
-- Simple to understand and debug
-- Easy to resume after crashes
-- No complex queue management
-- Transparent progress tracking
-
-## Configuration
-
-**File**: `config/default_config.json`
-
-**Structure**:
-```json
-{
-  "transcription": {
-    "model": "base",
-    "language": "auto",
-    "device": "metal"
-  },
-  "translation": {
-    "target_languages": ["en", "zh", "es", "ko"],
-    "ollama_model": "llama3",
-    "ollama_url": "http://localhost:11434"
-  },
-  "tts": {
-    "engine": "coqui-xtts",
-    "use_voice_cloning": true,
-    "languages": ["en", "zh", "es", "ko"],
-    "gpu_acceleration": "mps"
-  },
-  "voice_cloning": {
-    "sample_duration_sec": 15,
-    "auto_extract_from_sermon": true
-  },
-  "output": {
-    "base_dir": "./output/sermons",
-    "generate_index": true,
-    "formats": ["markdown", "pdf", "text"],
-    "organize_by": "author"
-  },
-  "object_storage": {
-    "enabled": false,
-    "type": "s3",
-    "bucket": "sermon-voices",
-    "endpoint": "http://localhost:9000",
-    "access_key": "",
-    "secret_key": "",
-    "auto_upload": false
-  },
-  "paths": {
-    "python_scripts": "./python",
-    "models": "./models"
+  "processing": {
+    "status": "completed",
+    "last_run": "2024-02-03T10:00:00Z",
+    "steps": ["transcribed", "translated", "tts_generated"]
   }
 }
 ```
+### 3. Output Directory Structure
 
-## Build System
+The goal is to keep all assets for a single sermon in one place, easily accessible and ready for object storage.
 
-### CMake Structure
-- Root `CMakeLists.txt` - Project configuration
-- `src/CMakeLists.txt` - Main executable
-- `tests/CMakeLists.txt` - Test executable
-- `lib/CMakeLists.txt` - Third-party dependencies
+**Pattern:**
+`output/<preacher_en_slug>/<series_en_slug>/<sequence>_<title_en_slug>_<verse_en_slug>_<created_at>/`
 
-### Makefile Wrapper
-Simplifies common operations:
-- `make setup` - Install dependencies
-- `make build` - Build project
-- `make process` - Run pipeline
-- `make serve` - Start web server
-- `make test` - Run tests
+**Example:**
+```
+output/stephen-tong/romans/001_the-power-of-god_1-16-17_20240115/
+├── original.mp3           # Original audio file
+├── metadata.json          # Extracted metadata
+├── transcript_zh.txt      # Refined Chinese transcript
+├── transcript_en.txt      # Translated English transcript
+├── audio_en_cloned.mp3    # TTS output with cloned voice
+└── ...
+```
 
-## Dependencies
+This structure makes it "easy to locate" everything related to a specific sermon without jumping between separate top-level folders.
 
-### C++ Libraries
-- **cpp-httplib** (header-only) - HTTP server
-- **nlohmann/json** (header-only) - JSON parsing
-- **inja** (header-only) - Template engine
+## Implementation Components (Python)
 
-### Python Packages
-- **faster-whisper** - Optimized Whisper implementation
-- **TTS** (Coqui) - Voice cloning and TTS
-- **ollama** - Ollama client
-- **pydub**, **soundfile**, **librosa** - Audio processing
+### 1. Metadata Extractor (`src/main.py`)
+Uses local LLM prompts to "guess" and extract structured data from chaotic folder structures and filenames found in `blobs/`.
 
-### System Dependencies
-- **FFmpeg** - Audio/video processing
-- **Ollama** - Local LLM server
-- **Python 3.9+** - ML script runtime
+### 2. Transcription Engine
+Leverages `faster-whisper` for high-speed local transcription, utilizing CoreML/MPS on Apple Silicon.
 
-## Error Handling
+### 3. LLM Refiner
+Uses Ollama (e.g., `llama3`) to correct OCR-like errors in transcripts, improve punctuation, and identify speaker segments.
 
-### Strategy
-- Each component has clear error codes
-- Graceful degradation: skip failed sermons, continue processing
-- Detailed error logging
-- Status file tracks failures with error messages
+### 4. Translation & TTS
+- **Translation**: Batch-processed via Ollama.
+- **TTS**: Coqui XTTS v2 for high-quality voice cloning, ensuring the translated sermon sounds like the original preacher.
 
-### Recovery
-- Re-running `make process` retries failed sermons
-- Status file prevents re-processing completed sermons
-- Manual intervention possible (edit status file)
+## Technical Decisions
 
-## Performance Considerations
-
-### M1 Mac Optimization
-- Whisper uses Core ML acceleration
-- XTTS uses MPS (Metal Performance Shaders)
-- Ollama optimized for Apple Silicon
-
-### Memory Management
-- Process sermons sequentially to avoid memory issues
-- Stream large files instead of loading entirely
-- Clean up temporary files after each sermon
-
-### Disk Space
-- Models: ~5GB total (Whisper + XTTS + Ollama)
-- Processing: ~1GB per sermon temporarily
-- Output: ~100MB per sermon (audio + documents)
-
-## Security Considerations
-
-- No network access except localhost (Ollama)
-- No cloud APIs or external data transmission
-- Input validation for file paths
-- Subprocess execution safety (avoid injection)
-
-## Testing Strategy
-
-### Unit Tests
-- Each component tested independently
-- Mock subprocess calls
-- Test JSON serialization
-
-### Integration Tests
-- Full pipeline with sample data
-- Error handling scenarios
-- Performance benchmarks
-
-### End-to-End Tests
-- Process sample sermon
-- Verify all outputs generated
-- Web UI functionality
-
-## Future Enhancements
-
-- Parallel processing of multiple sermons
-- Real-time progress UI in web interface
-- Support for more output formats
-- Better error recovery mechanisms
-- GPU batch processing optimization
-- Support for more languages
-- Speaker diarization (who said what)
+- **Slugification**: Using `python-slugify` to ensure all file paths are URL-safe and consistent.
+- **Persistence**: Using `output/processing_status.json` as a lightweight database of all known files and their current state.
+- **Communication**: Components communicate via structured JSON objects passed between function calls.

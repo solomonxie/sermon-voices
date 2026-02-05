@@ -1,163 +1,95 @@
 # Sermon Voices
 
-A hybrid C++/Python application that processes sermon audio/video files with AI-powered transcription, translation, voice-cloning TTS, and organized output for object storage. 100% local processing on M1 Mac, zero cloud APIs.
+A high-performance Python pipeline for processing sermon audio/video files with AI-powered transcription, translation, voice-cloning TTS, and organized English-slugified output. 100% local processing on M1 Mac, zero cloud APIs.
 
 ## Features
 
-- 🎵 Audio/video processing with FFmpeg
-- 📝 Local transcription (whisper.cpp)
-- 🌍 Multi-language translation (Ollama)
-- 🎤 Voice cloning + TTS (Coqui XTTS v2)
-- 📄 Document generation (Markdown, PDF, Text)
-- 📦 Organized output with metadata.json for each sermon
-- ☁️ Ready for object storage (S3, MinIO)
-- ✅ Simple idempotent processing (no queue, just rerun)
-- 🚫 Zero cloud APIs, 100% local on M1 Mac
+- 🎵 **Local-First Processing**: Zero cloud APIs, fully optimized for Apple Silicon (M1/M2/M3).
+- 📝 **LLM-Driven Metadata**: Uses local LLMs (Ollama/Llama3) to extract structured data from chaotic paths.
+- 🌍 **Multi-language pipeline**: Transcription (Whisper), Refinement, and Translation (Ollama).
+- 🎤 **Voice Cloning TTS**: High-quality TTS with cloned voices using Coqui XTTS v2.
+- 📦 **Clean Output**: Organized, English-slugified directory structure ready for object storage.
+- 🔒 **Content Hashing**: SHA-256 tracking to prevent redundant processing.
+- ✅ **Idempotent**: Rerun any time; only new or changed files are processed.
 
 ## Tech Stack
 
-- **C++17**: Main application orchestration
-- **Python**: ML model integration (Whisper, XTTS, Ollama)
-- **CMake**: Build system
-- **whisper.cpp**: Fast local transcription
-- **Ollama**: Local LLM for translation
-- **Coqui XTTS v2**: Voice cloning and TTS
-- **nlohmann/json**: JSON processing and metadata
+- **Python 3.9+**: Core pipeline and orchestration.
+- **faster-whisper**: Optimized local transcription.
+- **Ollama**: Local LLM inference for metadata extraction and refinement.
+- **Coqui XTTS v2**: Professional voice cloning and TTS.
+- **python-slugify**: URL-safe English path generation.
+- **FFmpeg**: Robust audio/video handling.
 
 ## Quick Start
 
 ### Prerequisites
 
-- macOS (M1/M2/M3)
-- Xcode Command Line Tools
+- macOS (M1/M2/M3 recommended)
+- [Ollama](https://ollama.ai) installed and running
 - Python 3.9+
-- CMake 3.15+
-- Ollama
+- FFmpeg (`brew install ffmpeg`)
 
 ### Installation
 
 ```bash
-# 1. Clone the repository
+# 1. Clone and enter
 git clone https://github.com/yourusername/sermon-voices.git
 cd sermon-voices
 
-# 2. Install all dependencies (C++, Python, Models)
+# 2. Setup environment
 make setup
-
-# 3. Build the project
-make build
 ```
 
 ### Usage
 
 ```bash
-# Place your sermon files in blobs/
-mkdir -p blobs/john_piper
-cp your_sermon.mp3 blobs/john_piper/2024-01-15_10-30-00.mp3
+# 1. Place sermon files in blobs/ (any structure)
+mkdir -p blobs/my_preacher
+cp sermon.mp3 blobs/my_preacher/
 
-# Process all sermons
+# 2. Extract metadata and reorganize (dry run by default)
+make extract-metadata
+make reorganize-files
+
+# 3. Process the full pipeline
 make process
-
-# View organized output
-ls output/sermons/john_piper/2024-01-15_10-30-00/
-# Will show: metadata.json, original/, transcripts/, audio/, documents/
 ```
 
 ## Project Structure
 
 ```
 sermon-voices/
-├── blobs/                  # Input audio/video files
+├── blobs/                  # Input raw files (chaotic structure OK)
 ├── output/
-│   ├── sermons/           # Organized sermon outputs
-│   │   └── <author>/
-│   │       └── <sermon_id>/
-│   │           ├── metadata.json
-│   │           ├── original/
-│   │           ├── transcripts/
-│   │           ├── audio/
-│   │           └── documents/
-│   └── index.json         # Global sermon index
-├── src/                    # C++ source code
-├── python/                 # Python ML scripts
-└── config/                 # Configuration files
+│   ├── audio/              # Organized, slugified sermon outputs
+│   │   └── <preacher_en>/
+│   │       └── <series_en>/
+│   │           └── <sermon_slug>/
+│   └── processing_status.json # Pipeline state and file hashes
+├── src/                    # Core Python pipeline
+└── scripts/                # Utility scripts
 ```
-
-## File Naming Convention
-
-Place sermon files in `blobs/<author>/<YYYY-MM-DD_HH-MM-SS>.<ext>`
-
-Examples:
-- `blobs/john_piper/2024-01-15_10-30-00.mp3`
-- `blobs/tim_keller/2024-02-20_09-00-00.mp4`
-
-## Processing Model
-
-The system tracks processing status in `output/processing_status.json`. When you run `make process`:
-
-1. Scans `blobs/` for all audio/video files
-2. Checks status file to find unprocessed/incomplete files
-3. Processes each file through the pipeline
-4. Updates status after each step
-5. Can be safely re-run anytime (idempotent)
 
 ## Makefile Commands
 
 ```bash
-make help              # Show all available commands
-
-# Setup
-make setup             # Install all dependencies
-make setup-cpp         # Install C++ dependencies only
-make setup-python      # Create venv and install Python packages
-make setup-ollama      # Download Ollama models
-
-# Build
-make build             # Build the C++ project
-make rebuild           # Clean and rebuild
-make debug             # Build with debug symbols
-
-# Run
-make process           # Process all sermons
-make process-one FILE= # Process a single sermon
-make index             # Generate global index.json
-
-# Testing
-make test              # Run all tests
-make test-audio        # Test audio extraction
-make test-transcript   # Test transcription
-make test-translate    # Test translation
-make test-tts          # Test TTS generation
-
-# Utilities
-make clean             # Clean build artifacts
-make clean-output      # Clean all generated outputs
-make check-deps        # Verify dependencies
+make setup             # Install all dependencies and pull models
+make extract-metadata  # Scan blobs/ and extract metadata via LLM
+make reorganize-files  # Reorganize into slugified structure
+make process           # Run the full end-to-end pipeline
+make clean-output      # Reset all generated data
 ```
 
 ## Configuration
 
-Edit `config/default_config.json` to customize:
-
-- Target languages for translation
-- Transcription model (base/small/medium)
-- TTS settings
-- Voice cloning parameters
-- Output directory structure
-- Object storage settings (S3/MinIO)
+Customizations for languages, models, and paths can be found in `config/default_config.json`.
 
 ## Development
 
-See [DESIGN.md](DESIGN.md) for architecture details.
-See [IMPLEMENTATION.md](IMPLEMENTATION.md) for development progress.
+- [DESIGN.md](DESIGN.md): Architecture and metadata schemas.
+- [IMPLEMENTATION.md](IMPLEMENTATION.md): Development logs and roadmap.
 
 ## License
 
 MIT License
-
-## Acknowledgments
-
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Fast Whisper implementation
-- [Ollama](https://ollama.ai) - Local LLM inference
-- [Coqui XTTS](https://github.com/coqui-ai/TTS) - Voice cloning and TTS
-- [cpp-httplib](https://github.com/yhirose/cpp-httplib) - HTTP server library
