@@ -147,31 +147,18 @@ def extract_metadata(path: str) -> Dict[str, Any]:
     DO NOT TRANSLATE ANYTHING AT THIS STEP except for the "scriptures.book" field which MUST be standard English.
 
     GOAL:
-    1. Preacher's Name: Look at parent folders first. Identify who is speaking (e.g., "华贤", "唐崇荣").
-    2. Sermon Title: Find the core title of the message (e.g., "烧荆棘的爆声").
-    3. Bible Book/Series: Identify the book of the Bible being discussed (e.g., "传道书", "罗马书").
-    4. Scriptures: List the specific references (e.g., "Ecclesiastes", 7, "6").
-
+    1. Preacher's Name: Look at parent folders first. Identify who is speaking
+    2. Sermon Title: Find the core title of the message
+    3. Bible Book/Series: Identify the book of the Bible being discussed
+    4. Scriptures: List the specific references
     Return ONLY a JSON object:
     {{
-        "preacher": "original Chinese name",
-        "series": "original Chinese series/book name",
+        "preacher": "original name",
+        "series": "original series/bible book name",
         "sequence": "3-digit sequence string",
         "scriptures": [{{"book": "English Bible Book", "chapter": int, "verses": "string"}}],
-        "title": "original Chinese title",
+        "title": "original title",
         "created_at": "YYYY-MM-DD or unknown"
-    }}
-
-    Example:
-    Path: "./blobs/华贤/20230621传道书042（7章6节）烧荆棘的爆声.mp3"
-    Result:
-    {{
-        "preacher": "华贤",
-        "series": "传道书",
-        "sequence": "042",
-        "scriptures": [{{"book": "Ecclesiastes", "chapter": 7, "verses": "6"}}],
-        "title": "烧荆棘的爆声",
-        "created_at": "2023-06-21"
     }}
     """
     
