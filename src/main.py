@@ -30,7 +30,6 @@ def main():
             process_sermon(path)
         except Exception as e:
             print(f"❌ Error processing {path}: {str(e)}")
-        break
 
 def process_sermon(path: str):
     """ Processes a single sermon file through the full pipeline. """
@@ -41,13 +40,13 @@ def process_sermon(path: str):
     # For now, we always extract metadata to be sure, unless we implement a central status.json
 
     # 1. Metadata Extraction
-    original_metadata = extract_metadata(path)
-    if not original_metadata:
+    metadata = extract_metadata(path)
+    if not metadata:
         print(f"⏩ Skipping {path}: Could not extract metadata")
         return
 
-    # 1.1 Metadata Refinement (translation)
-    metadata = refine_metadata(original_metadata)
+    # 1.1 Metadata translation
+    metadata = translate_metadata(metadata)
 
     # 2. Directory Setup
     sermon_dir = get_sermon_dir(metadata)
@@ -97,7 +96,7 @@ def process_sermon(path: str):
     print(f"✅ Successfully processed: {metadata['title']}")
 
 def extract_preacher(path: str, model: str = None) -> str:
-    hints = '\n'.join(path.split('/'))
+    hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
     prompt = f"""
     Find the most probable preacher's name from the given path.
     Return ONLY the name in its ORIGINAL language as found in the path.
@@ -106,10 +105,12 @@ def extract_preacher(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    return (ask_llm(prompt, model=model) or "unknown_preacher").strip().split('\n')[-1].strip(' "()')
+    answer = ask_llm(prompt, model=model) or "unknown_preacher"
+    print(f'\t Preacher: {answer}')
+    return answer.strip()
 
 def extract_series(path: str, model: str = None) -> str:
-    hints = '\n'.join(path.split('/'))
+    hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
     prompt = f"""
     Find the most probable Bible book or sermon series name from the given hints.
     Return ONLY the name in its ORIGINAL language as found in the path.
@@ -119,10 +120,12 @@ def extract_series(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    return (ask_llm(prompt, model=model) or "series0").strip().split('\n')[-1].strip(' "()')
+    answer = ask_llm(prompt, model=model) or "series0"
+    print(f'\t Series: {answer}')
+    return answer.strip()
 
 def extract_title(path: str, model: str = None) -> str:
-    hints = '\n'.join(path.split('/'))
+    hints = os.path.basename(path)
     prompt = f"""
     Find the specific sermon title from the given hints.
     Return ONLY the title in its ORIGINAL language as found in the path.
@@ -132,10 +135,12 @@ def extract_title(path: str, model: str = None) -> str:
     Hints:
     {path}
     """
-    return (ask_llm(prompt, model=model) or "untitled").strip().split('\n')[-1].strip(' "()《》')
+    answer = ask_llm(prompt, model=model) or "untitled"
+    print(f'\t Title: {answer}')
+    return answer.strip()
 
 def extract_scriptures(path: str, model: str = None) -> str:
-    hints = '\n'.join(path.split('/'))
+    hints = os.path.basename(path)
     prompt = f"""
     Find the specific Bible verses from the given hints.
     Return the result in the format: "Book chX:vY" (English book name).
@@ -147,13 +152,12 @@ def extract_scriptures(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    result = ask_llm(prompt, model=model)
-    if not result:
-        return "Unknown"
-    return result.strip().split('\n')[-1].strip(' "()《》')
+    answer = ask_llm(prompt, model=model) or "ch0:v0"
+    print(f'\t Scripture: {answer}')
+    return answer.strip()
 
 def extract_sequence(path: str, model: str = None) -> str:
-    hints = '\n'.join(path.split('/'))
+    hints = os.path.basename(path)
     prompt = f"""
     Find the sequence number or lecture number of the sermon from the given hints.
     Return ONLY the sequence number padded to 3 digits (e.g., 001, 042).
@@ -166,29 +170,25 @@ def extract_sequence(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    result = ask_llm(prompt, model=model)
-    if not result:
-        return "000"
-    match = re.search(r'(\d+)', result.strip().split('\n')[-1])
+    answer = ask_llm(prompt, model=model) or ''
+    print(f'\t Sequence: {answer}')
+    match = re.search(r'(\d+)', answer.strip())
     if match:
         return match.group(1).zfill(3)
     return "000"
 
 def extract_created_at(path: str, model: str = None) -> str:
     """ Extracts date (YYYYMMDD) from path or filename using LLM. """
-    hints = '\n'.join(path.split('/'))
+    hints = os.path.basename(path)
     prompt = f"""
     Find the most probable creation date or preaching date from the given hints.
     Return ONLY the date in YYYYMMDD format.
-    If no date is found, return "00000000".
     Hints:
     {hints}
     """
-    data = ask_llm(prompt, model=model)
-    if not data:
-        return "00000000"
-    # Clean up any potential extra text from LLM
-    match = re.search(r'(\d{8})', data)
+    answer = ask_llm(prompt, model=model) or ''
+    print(f'\t Created at: {answer}')
+    match = re.search(r'(\d{8})', data or '')
     if match:
         return match.group(1)
     return "00000000"
@@ -207,7 +207,7 @@ def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
         "original_path": path
     }
 
-def refine_metadata(metadata: dict) -> dict:
+def translate_metadata(metadata: dict) -> dict:
     """ Translates metadata fields to English using Christian context knowledge. """
     prompt = f"""
     Translate the metadata for this sermon:
@@ -398,7 +398,7 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
 
 
 
-def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = None) -> Any:
+def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> Any:
     """ Centralized helper for Ollama LLM communication. """
     try:
         response = ollama.generate(
@@ -407,6 +407,7 @@ def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = N
             format=format,
             options={
                 "num_ctx": num_ctx,
+                "temperature": temperature,
                 # "num_thread": 4,
                 # Ollama on M1/Metal handles GPU acceleration automatically.
                 # Removing num_thread allows the server to optimize for hardware.

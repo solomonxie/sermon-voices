@@ -1,5 +1,5 @@
 import pytest
-from src.main import extract_preacher, extract_series, extract_title, extract_scriptures, extract_sequence
+from src.main import extract_preacher, extract_series, extract_title, extract_scriptures, extract_sequence, extract_created_at
 
 MODELS = [
     "qwen3:8b",  # PASSED EVERY TEST
@@ -71,3 +71,15 @@ def test_extract_sequence2(model):
     path = 'blobs/唐崇荣/《唐崇荣-约翰福音》/约翰福音第01讲.mp3'
     sequence = extract_sequence(path, model=model)
     assert sequence == '001', f"Model {model} failed"
+
+@pytest.mark.parametrize("model", MODELS)
+def test_extract_created_at(model):
+    path = './blobs/华贤/4传1-93全（rar文件）/密码20232024/20230621传道书042（7章6节）烧荆棘的爆声.mp3'
+    created_at = extract_created_at(path, model=model)
+    assert created_at == '20230621', f"Model {model} failed"
+
+@pytest.mark.parametrize("model", MODELS)
+def test_extract_created_at2(model):
+    path = 'blobs/唐崇荣/《唐崇荣-约翰福音》/约翰福音第01讲.mp3'
+    created_at = extract_created_at(path, model=model)
+    assert created_at == '00000000', f"Model {model} failed"
