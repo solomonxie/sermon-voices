@@ -96,43 +96,6 @@ def process_sermon(path: str):
     save_metadata(sermon_dir, metadata)
     print(f"✅ Successfully processed: {metadata['title']}")
 
-CHINESE_BIBLE_BOOKS = {
-    "创": "Genesis", "创世记": "Genesis", "出": "Exodus", "出埃及记": "Exodus",
-    "利": "Leviticus", "利未记": "Leviticus", "民": "Numbers", "民数记": "Numbers",
-    "申": "Deuteronomy", "申命记": "Deuteronomy", "约书亚记": "Joshua", "士": "Judges",
-    "士师记": "Judges", "路": "Ruth", "路得记": "Ruth", "撒上": "1 Samuel",
-    "撒母耳记上": "1 Samuel", "撒下": "2 Samuel", "撒母耳记下": "2 Samuel",
-    "王上": "1 Kings", "列王纪上": "1 Kings", "王下": "2 Kings", "列王纪下": "2 Kings",
-    "代上": "1 Chronicles", "历代志上": "1 Chronicles", "代下": "2 Chronicles",
-    "历代志下": "2 Chronicles", "拉": "Ezra", "以斯拉记": "Ezra", "尼": "Nehemiah",
-    "尼希米记": "Nehemiah", "斯": "Esther", "以斯帖记": "Esther", "伯": "Job",
-    "约伯记": "Job", "诗": "Psalms", "诗篇": "Psalms", "箴": "Proverbs",
-    "箴言": "Proverbs", "传": "Ecclesiastes", "传道书": "Ecclesiastes",
-    "歌": "Song of Solomon", "雅歌": "Song of Solomon", "赛": "Isaiah",
-    "以赛亚书": "Isaiah", "耶": "Jeremiah", "耶利米书": "Jeremiah", "哀": "Lamentations",
-    "耶利米哀歌": "Lamentations", "结": "Ezekiel", "以西结书": "Ezekiel", "但": "Daniel",
-    "但以理书": "Daniel", "何": "Hosea", "何西阿书": "Hosea", "约珥书": "Joel",
-    "阿": "Amos", "阿摩司书": "Amos", "俄": "Obadiah", "俄巴底亚书": "Obadiah",
-    "拿": "Jonah", "约拿书": "Jonah", "弥": "Micah", "弥迦书": "Micah", "鸿": "Nahum",
-    "那鸿书": "Nahum", "合": "Habakkuk", "哈巴谷书": "Habakkuk", "番": "Zephaniah",
-    "西番雅书": "Zephaniah", "该": "Haggai", "哈该书": "Haggai", "撒迦利亚书": "Zechariah",
-    "玛": "Malachi", "玛拉基书": "Malachi", "太": "Matthew", "马太福音": "Matthew",
-    "可": "Mark", "马可福音": "Mark", "路加福音": "Luke", "约": "John",
-    "约翰福音": "John", "徒": "Acts", "使徒行传": "Acts", "罗": "Romans",
-    "罗马书": "Romans", "林前": "1 Corinthians", "哥林多前书": "1 Corinthians",
-    "林后": "2 Corinthians", "哥林多后书": "2 Corinthians", "加": "Galatians",
-    "加拉太书": "Galatians", "弗": "Ephesians", "以弗所书": "Ephesians", "腓": "Philippians",
-    "腓立比书": "Philippians", "西": "Colossians", "歌罗西书": "Colossians",
-    "帖前": "1 Thessalonians", "帖撒罗尼迦前书": "1 Thessalonians", "帖后": "2 Thessalonians",
-    "帖撒罗尼迦后书": "2 Thessalonians", "提上": "1 Timothy", "提摩太前书": "1 Timothy",
-    "提下": "2 Timothy", "提摩太后书": "2 Timothy", "多": "Titus", "提多书": "Titus",
-    "门": "Philemon", "腓利门书": "Philemon", "来": "Hebrews", "希伯来书": "Hebrews",
-    "雅": "James", "雅各书": "James", "彼前": "1 Peter", "彼得前书": "1 Peter",
-    "彼后": "2 Peter", "彼得后书": "2 Peter", "约一": "1 John", "约翰一书": "1 John",
-    "约二": "2 John", "约翰二书": "2 John", "约三": "3 John", "约翰三书": "3 John",
-    "犹": "Jude", "犹大书": "Jude", "启": "Revelation", "启示录": "Revelation"
-}
-
 def extract_preacher(path: str, model: str = None) -> str:
     hints = '\n'.join(path.split('/'))
     prompt = f"""
@@ -143,7 +106,7 @@ def extract_preacher(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    return (ask_llm(prompt, model=model) or "unknown").strip().split('\n')[-1].strip(' "()')
+    return (ask_llm(prompt, model=model) or "unknown_preacher").strip().split('\n')[-1].strip(' "()')
 
 def extract_series(path: str, model: str = None) -> str:
     hints = '\n'.join(path.split('/'))
@@ -156,7 +119,7 @@ def extract_series(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    return (ask_llm(prompt, model=model) or "unknown").strip().split('\n')[-1].strip(' "()')
+    return (ask_llm(prompt, model=model) or "series0").strip().split('\n')[-1].strip(' "()')
 
 def extract_title(path: str, model: str = None) -> str:
     hints = '\n'.join(path.split('/'))
@@ -256,20 +219,17 @@ def refine_metadata(metadata: dict) -> dict:
 
 def get_sermon_dir(metadata: dict) -> str:
     """ Generates a unique, slugified directory path for the sermon. """
-    preacher_slug = slugify(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown')
-    series_slug = slugify(metadata.get('series_en') or metadata.get('series') or 'unknown')
+    preacher_slug = slugify(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown_preacher')
+    series_slug = slugify(metadata.get('series_en') or metadata.get('series') or 'unamed_series')
 
-    # Use first scripture for slug
-    scripture_slug = "unknown"
-    if metadata.get('scriptures') and isinstance(metadata['scriptures'], list) and len(metadata['scriptures']) > 0:
-        s = metadata['scriptures'][0]
-        scripture_slug = f"{s.get('book', 'unknown')}-{s.get('chapter', '0')}-{s.get('verses', '0')}"
+    # Use scriptures string for slug
+    scripture_slug = slugify(metadata.get('scriptures') or 'scripture0')
 
     sermon_slug = "{}_{}_{}_{}".format(
         slugify(str(metadata.get('sequence', '000'))),
         slugify(metadata.get('title_en') or metadata.get('title', 'untitled')),
         slugify(scripture_slug),
-        slugify(str(metadata.get('created_at', 'unknown')))
+        slugify(str(metadata.get('created_at', '00000000')))
     )
     return os.path.join(OUTPUT_ROOT, preacher_slug, series_slug, sermon_slug)
 
@@ -402,9 +362,13 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
     print(f"🗣️ Generating Cloned Voice TTS (XTTS v2): {output_path}")
     try:
         from TTS.api import TTS
-        # Load model (optimized for CPU/M1 if possible)
+        import torch
+        # Load model with MPS (Metal) support if available
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"🖥️ Using device: {device}")
+        
         model_name = "tts_models/multilingual/multi-dataset/xtts_v2"
-        tts = TTS(model_name).to("cpu")
+        tts = TTS(model_name).to(device)
 
         with open(text_path, 'r', encoding='utf-8') as f:
             text = f.read()[:200] # Short sample for now to test
@@ -431,7 +395,9 @@ def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = N
             format=format,
             options={
                 "num_ctx": num_ctx,
-                "num_thread": 4
+                # "num_thread": 4,
+                # Ollama on M1/Metal handles GPU acceleration automatically.
+                # Removing num_thread allows the server to optimize for hardware.
             }
         )
         content = response['response']
