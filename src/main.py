@@ -8,7 +8,7 @@ import ollama
 from slugify import slugify
 
 # Configuration
-DEFAULT_MODEL = 'llama3'
+DEFAULT_MODEL = 'qwen3:8b'
 OUTPUT_ROOT = './output'
 BLOBS_ROOT = './blobs'
 
@@ -16,7 +16,7 @@ BLOBS_ROOT = './blobs'
 def main():
     """ Main entry point for the sermon processing pipeline. """
     print(f"🚀 Starting sermon processing pipeline...")
-    
+
     # Ensure raw files are available
     files = glob(os.path.join(BLOBS_ROOT, '**/*.mp3'), recursive=True)
     if not files:
@@ -35,17 +35,17 @@ def main():
 def process_sermon(path: str):
     """ Processes a single sermon file through the full pipeline. """
     print(f"\n📂 Processing: {path}")
-    
+
     # 0. Quick Check for Idempotency (Pre-Extraction)
     # We can't know the exact folder until we extract, but we can check if it exists in metadata.json cache
     # For now, we always extract metadata to be sure, unless we implement a central status.json
-    
+
     # 1. Metadata Extraction
     original_metadata = extract_metadata(path)
     if not original_metadata:
         print(f"⏩ Skipping {path}: Could not extract metadata")
         return
-    
+
     # 1.1 Metadata Refinement (translation)
     metadata = refine_metadata(original_metadata)
 
@@ -137,9 +137,9 @@ def extract_preacher(path: str, model: str = None) -> str:
     hints = '\n'.join(path.split('/'))
     prompt = f"""
     Find the most probable preacher's name from the given path.
-    Return ONLY the name in its ORIGINAL language as found in the path. 
+    Return ONLY the name in its ORIGINAL language as found in the path.
     DO NOT translate. DO NOT add any explanation.
-    
+
     Hints:
     {hints}
     """
@@ -211,11 +211,11 @@ def extract_created_at(path: str, model: str = None) -> str:
 def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
     """ Uses modular extraction calls to gather metadata. """
     print(f"🔍 Extracting metadata for: {path}")
-    
+
     # Extract sequence based on file position in its original folder
     parent_dir = os.path.dirname(path)
     all_files = sorted([f for f in os.listdir(parent_dir) if f.lower().endswith('.mp3')])
-    
+
     try:
         idx = all_files.index(os.path.basename(path))
         sequence = str(idx + 1).zfill(3)
@@ -258,7 +258,7 @@ def get_sermon_dir(metadata: dict) -> str:
     """ Generates a unique, slugified directory path for the sermon. """
     preacher_slug = slugify(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown')
     series_slug = slugify(metadata.get('series_en') or metadata.get('series') or 'unknown')
-    
+
     # Use first scripture for slug
     scripture_slug = "unknown"
     if metadata.get('scriptures') and isinstance(metadata['scriptures'], list) and len(metadata['scriptures']) > 0:
@@ -290,7 +290,7 @@ def transcript_audio(audio_path: str) -> str:
     text = ""
     for segment in segments:
         text += f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}\n"
-    
+
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(text)
     return output_path
@@ -305,7 +305,7 @@ def refine_transcript(path: str) -> str:
         content = f.read()
 
     prompt = f"Refine this sermon transcript for punctuation, speaker identification, and pinyin errors. Keep it verbatim but clean it up for reading:\n\n{content[:2000]}" # Limit context
-    
+
     content_refined = ask_llm(prompt, num_ctx=8192)
     if content_refined:
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -317,7 +317,7 @@ def convert_to_markdown(path: str) -> str:
     output_path = path.replace('.txt', '.md')
     if os.path.exists(output_path):
         return output_path
-    
+
     print(f"📝 Generating Markdown: {output_path}")
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -331,11 +331,11 @@ def convert_to_latex(path: str) -> str:
     output_path = path.replace('.md', '.tex')
     if os.path.exists(output_path):
         return output_path
-        
+
     print(f"📄 Generating LaTeX: {output_path}")
     with open(path, 'r', encoding='utf-8') as f:
         md_content = f.read()
-    
+
     try:
         import pypandoc
         tex_content = pypandoc.convert_text(md_content, 'latex', format='markdown')
@@ -351,7 +351,7 @@ def convert_to_pdf(path: str) -> str:
     output_path = path.replace('.tex', '.pdf')
     if os.path.exists(output_path):
         return output_path
-    
+
     print(f"📊 Generating PDF: {output_path}")
     source_md = path.replace('.tex', '.md')
     with open(source_md, 'r', encoding='utf-8') as f:
@@ -382,7 +382,7 @@ def translate_transcript(path: str) -> str:
     # Process in chunks if too long
     chunk = content[:2500]
     prompt = f"Translate the following sermon transcript to English. Ensure theological accuracy and clear flow:\n\n{chunk}"
-    
+
     translated_text = ask_llm(prompt, num_ctx=4096)
     if translated_text:
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -404,11 +404,11 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
         from TTS.api import TTS
         # Load model (optimized for CPU/M1 if possible)
         model_name = "tts_models/multilingual/multi-dataset/xtts_v2"
-        tts = TTS(model_name).to("cpu") 
-        
+        tts = TTS(model_name).to("cpu")
+
         with open(text_path, 'r', encoding='utf-8') as f:
             text = f.read()[:200] # Short sample for now to test
-            
+
         tts.tts_to_file(
             text=text,
             speaker_wav=audio_path, # Use original audio as the voice clone source
@@ -442,7 +442,7 @@ def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = N
         print(f"⚠️ LLM Error with model {model or DEFAULT_MODEL}: {e}")
         return None
 
-        
+
 if __name__ == '__main__':
     # Initial setup checks
     if not os.path.exists(OUTPUT_ROOT):
