@@ -179,37 +179,26 @@ def extract_metadata(path: str) -> Dict[str, Any]:
 
 def refine_metadata(metadata: dict) -> dict:
     """ Translates metadata fields to English using Christian context knowledge. """
-    # Hardcoded known translations to help the model / override
-    preacher_map = {
-        "华贤": "Hua Xian",
-        "唐崇荣": "Stephen Tong",
-        "康来昌": "Kang Lai Chang"
-    }
-    
-    metadata['preacher_en'] = preacher_map.get(metadata.get('preacher'), "")
-    metadata['series_en'] = normalize_bible_book(metadata.get('series'))
-
     prompt = f"""
-    Translate the following sermon title to theological English. 
-    Original Title: {metadata.get('title')}
-    Preacher: {metadata.get('preacher')}
-    Bible Series: {metadata.get('series')}
+    Translate the metadata for this sermon:
+    {metadata}
 
-    Return JSON with key "title_en" ONLY.
-    Example: {{"title_en": "The Power of God"}}
+    All translations should be in the context of Bible and Christianity knowledge.
+    For preacher name translations, prioritize knowledge, otherwise prefer phonetic translation.
+    For series name translations, prioritize knowledge, otherwise prefer phonetic translation.
+    Return JSON object including keys preacher_en, series_en, title_en
+    Example:
+    {{
+        "preacher_en": "Stephen Tong",
+        "series_en": "Ecclesiastes",
+        "title_en": "The Power of God"
+    }}
     """
     try:
         # Only translate title if we have the rest
-        if metadata.get('title'):
-            response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt, format='json')
-            data = json.loads(response['response'])
-            metadata['title_en'] = data.get('title_en', '')
-        
-        # Final cleanup for preacher_en and series_en if LLM missed them
-        if not metadata.get('preacher_en'):
-            # Fallback to phonetic if not in map
-            metadata['preacher_en'] = slugify(metadata.get('preacher', 'unknown')).replace('-', ' ').title()
-            
+        response = ollama.generate(model=DEFAULT_MODEL, prompt=prompt, format='json')
+        data = json.loads(response['response'])
+        metadata.update(data)
         return metadata
     except Exception as e:
         print(f"⚠️ Metadata refinement failed: {e}")
