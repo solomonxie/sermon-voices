@@ -11,6 +11,7 @@ from slugify import slugify
 DEFAULT_MODEL = 'qwen3:8b'
 OUTPUT_ROOT = './output'
 BLOBS_ROOT = './blobs'
+PROCESSED_LOG = os.path.join(OUTPUT_ROOT, 'processed.txt')
 
 
 def main():
@@ -23,13 +24,28 @@ def main():
         print(f"⚠️ No MP3 files found in {BLOBS_ROOT}")
         return
 
+    # Load processed files
+    processed_files = set()
+    if os.path.exists(PROCESSED_LOG):
+        with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
+            processed_files = set(line.strip() for line in f if line.strip())
+
     for path in files:
-        # Check if already processed (basic check)
-        # We'll refine this inside process_sermon
+        # Check if already processed
+        abs_path = os.path.abspath(path)
+        if abs_path in processed_files:
+            print(f"⏭️  Already in processed log: {path}")
+            continue
+
         try:
             process_sermon(path)
         except Exception as e:
             print(f"❌ Error processing {path}: {str(e)}")
+            
+        # Add to processed log after success
+        with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
+            f.write(f"{abs_path}\n")
+        processed_files.add(abs_path)
 
 def process_sermon(path: str):
     """ Processes a single sermon file through the full pipeline. """
@@ -100,21 +116,20 @@ def extract_preacher(path: str, model: str = None) -> str:
     prompt = f"""
     Find the most probable preacher's name from the given path.
     Return ONLY the name in its ORIGINAL language as found in the path.
-    DO NOT translate. DO NOT add any explanation.
-
+    DO NOT translate. DO NOT add any explanation. If unknown, return "unknown_preacher"
     Hints:
     {hints}
     """
     answer = ask_llm(prompt, model=model) or "unknown_preacher"
     print(f'\t Preacher: {answer}')
-    return answer.strip()
+    return answer
 
 def extract_series(path: str, model: str = None) -> str:
     hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
     prompt = f"""
     Find the most probable Bible book or sermon series name from the given hints.
     Return ONLY the name in its ORIGINAL language as found in the path.
-    DO NOT translate. DO NOT add any explanation.
+    DO NOT translate. DO NOT add any explanation. If unknown, return "series0"
     Example input: "blobs/唐崇荣/《唐崇荣-约翰福音》/约翰福音第01讲.mp3"
     Example output: "约翰福音"
     Hints:
@@ -122,14 +137,14 @@ def extract_series(path: str, model: str = None) -> str:
     """
     answer = ask_llm(prompt, model=model) or "series0"
     print(f'\t Series: {answer}')
-    return answer.strip()
+    return answer
 
 def extract_title(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
     prompt = f"""
     Find the specific sermon title from the given hints.
     Return ONLY the title in its ORIGINAL language as found in the path.
-    DO NOT translate. DO NOT add any explanation.
+    DO NOT translate. DO NOT add any explanation. If unknown, return "untitled"
     Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
     Example output: "烧荆棘的爆声"
     Hints:
@@ -137,7 +152,7 @@ def extract_title(path: str, model: str = None) -> str:
     """
     answer = ask_llm(prompt, model=model) or "untitled"
     print(f'\t Title: {answer}')
-    return answer.strip()
+    return answer
 
 def extract_scriptures(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
@@ -145,7 +160,7 @@ def extract_scriptures(path: str, model: str = None) -> str:
     Find the specific Bible verses from the given hints.
     Return the result in the format: "Book chX:vY" (English book name).
     If multiple, return comma separated.
-    If no specific verses found, return "Unknown".
+    If no specific verses found, return "ch0:v0".
     DO NOT return JSON. DO NOT add any explanation.
     Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
     Example output: "Ecclesiastes ch7:v6"
@@ -154,7 +169,7 @@ def extract_scriptures(path: str, model: str = None) -> str:
     """
     answer = ask_llm(prompt, model=model) or "ch0:v0"
     print(f'\t Scripture: {answer}')
-    return answer.strip()
+    return answer
 
 def extract_sequence(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
@@ -172,7 +187,7 @@ def extract_sequence(path: str, model: str = None) -> str:
     """
     answer = ask_llm(prompt, model=model) or ''
     print(f'\t Sequence: {answer}')
-    match = re.search(r'(\d+)', answer.strip())
+    match = re.search(r'(\d+)', answer)
     if match:
         return match.group(1).zfill(3)
     return "000"
@@ -182,13 +197,13 @@ def extract_created_at(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
     prompt = f"""
     Find the most probable creation date or preaching date from the given hints.
-    Return ONLY the date in YYYYMMDD format.
+    Return ONLY the date in YYYYMMDD format. If not known, then respond "00000000"
     Hints:
     {hints}
     """
     answer = ask_llm(prompt, model=model) or ''
     print(f'\t Created at: {answer}')
-    match = re.search(r'(\d{8})', data or '')
+    match = re.search(r'(\d{8})', answer)
     if match:
         return match.group(1)
     return "00000000"
@@ -210,23 +225,26 @@ def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
 def translate_metadata(metadata: dict) -> dict:
     """ Translates metadata fields to English using Christian context knowledge. """
     prompt = f"""
-    Translate the metadata for this sermon:
-    {metadata}
-
+    Translate the metadata.
     All translations should be in the context of Bible and Christianity knowledge.
-    For preacher name translations, prioritize knowledge, otherwise prefer phonetic translation.
-    For series name translations, prioritize knowledge, otherwise prefer phonetic translation.
-    Return JSON object including keys preacher_en, series_en, title_en
-    Example:
+    Translation prioritize knowledge, otherwise prefer phonetic translation.
+    Return JSON object including keys in example below:
     {{
         "preacher_en": "John Piper",
         "series_en": "Ecclesiastes",
         "title_en": "The Power of God"
     }}
+    Content:
+    {metadata}
     """
-    data = ask_llm(prompt, format='json', num_ctx=2048)
-    if data:
-        metadata.update(data)
+    data = {}
+    try:
+        data = ask_llm(prompt, format='json')
+    except Exception as e:
+        print(f"⚠️ JSON parsing error: {e}")
+    metadata['preacher_en'] = data.get('preacher_en')
+    metadata['series_en'] = data.get('series_en')
+    metadata['title_en'] = data.get('title_en')
     return metadata
 
 def get_sermon_dir(metadata: dict) -> str:
@@ -353,9 +371,12 @@ def translate_transcript(path: str) -> str:
 
     # Process in chunks if too long
     chunk = content[:2500]
-    prompt = f"Translate the following sermon transcript to English. Ensure theological accuracy and clear flow:\n\n{chunk}"
+    prompt = f"""
+    Translate the following sermon transcript to English. Ensure biblical and theological accuracy and clear flow:
+    {chunk}
+    """
 
-    translated_text = ask_llm(prompt, num_ctx=4096)
+    translated_text = ask_llm(prompt)
     if translated_text:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(translated_text)
@@ -414,12 +435,15 @@ def ask_llm(prompt: str, format: str = None, num_ctx: int = 4096, model: str = N
             }
         )
         content = response['response']
+        # Remove <think>...</think> tags
+        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+        
         if format == 'json':
             return json.loads(content)
         return content
     except Exception as e:
         print(f"⚠️ LLM Error with model {model or DEFAULT_MODEL}: {e}")
-        return None
+        return {}
 
 
 if __name__ == '__main__':
