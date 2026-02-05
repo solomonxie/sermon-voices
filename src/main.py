@@ -18,8 +18,8 @@ def main():
     """ Main entry point for the sermon processing pipeline. """
     print(f"🚀 Starting sermon processing pipeline...")
 
-    # Phase 1: Metadata Harvesting
-    print(f"\n--- Phase 1: Metadata Harvesting ---")
+    # Phase 1: Metadata extraction
+    print(f"\n--- Phase 1: Metadata Extraction ---")
     files = glob(os.path.join(BLOBS_ROOT, '**/*.mp3'), recursive=True)
     if not files:
         print(f"⚠️ No MP3 files found in {BLOBS_ROOT}")
@@ -38,7 +38,7 @@ def main():
             try:
                 process_metadata(path)
             except Exception as e:
-                print(f"❌ Error harvesting metadata for {path}: {str(e)}")
+                print(f"❌ Error extracting metadata for {path}: {str(e)}")
 
     # Phase 2: Audio Processing
     print(f"\n--- Phase 2: Audio Processing ---")
@@ -49,9 +49,10 @@ def main():
         except Exception as e:
             print(f"❌ Error processing audio for {metadata_path}: {str(e)}")
 
+
 def process_metadata(path: str):
     """ Extracts metadata and sets up the directory structure. """
-    print(f"🔍 Harvesting: {path}")
+    print(f"🔍 Extracting: {path}")
     
     # 1. Extraction
     metadata = extract_metadata(path)
@@ -75,6 +76,7 @@ def process_metadata(path: str):
     
     # 4. Save Metadata
     save_metadata(sermon_dir, metadata)
+
 
 def process_audio(metadata_path: str):
     """ Processes audio tasks based on the current status in metadata.json. """
@@ -148,6 +150,7 @@ def process_audio(metadata_path: str):
                 f.write(f"{os.path.abspath(metadata['original_path'])}\n")
             print(f"✅ Fully processed: {metadata['title']}")
 
+
 def extract_preacher(path: str, model: str = None) -> str:
     hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
     prompt = f"""
@@ -157,9 +160,10 @@ def extract_preacher(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=50) or "unknown_preacher"
+    answer = ask_llm(prompt, model=model, num_ctx=2048) or "unknown_preacher"
     print(f'\t Preacher: {answer}')
-    return answer
+    return answer[-50:]
+
 
 def extract_series(path: str, model: str = None) -> str:
     hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
@@ -172,9 +176,10 @@ def extract_series(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=50) or "series0"
+    answer = ask_llm(prompt, model=model, num_ctx=2048) or "series0"
     print(f'\t Series: {answer}')
-    return answer
+    return answer[-50:]
+
 
 def extract_title(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
@@ -187,9 +192,10 @@ def extract_title(path: str, model: str = None) -> str:
     Hints:
     {path}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=100) or "untitled"
+    answer = ask_llm(prompt, model=model, num_ctx=2048) or "untitled"
     print(f'\t Title: {answer}')
-    return answer
+    return answer[-100:]
+
 
 def extract_scriptures(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
@@ -204,9 +210,10 @@ def extract_scriptures(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=50) or "ch0:v0"
+    answer = ask_llm(prompt, model=model, num_ctx=2048) or "ch0:v0"
     print(f'\t Scripture: {answer}')
-    return answer
+    return answer[-50:]
+
 
 def extract_sequence(path: str, model: str = None) -> str:
     hints = os.path.basename(path)
@@ -215,19 +222,20 @@ def extract_sequence(path: str, model: str = None) -> str:
     Return ONLY the sequence number padded to 3 digits (e.g., 001, 042).
     If no sequence is found, return "000".
     DO NOT add any explanation.
-    Example input: "20230621传道书042（7章6节）烧荆棘的爆声.mp3"
-    Example output: "042"
     Example input: "约翰福音第01讲.mp3"
     Example output: "001"
+    Example input: "20230621传道书99.mp3"
+    Example output: "099"
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=5) or ''
+    answer = ask_llm(prompt, model=model, num_ctx=2048) or ''
     print(f'\t Sequence: {answer}')
-    match = re.search(r'(\d+)', answer)
+    match = re.search(r'(\d+)', answer[-10:])
     if match:
         return match.group(1).zfill(3)
     return "000"
+
 
 def extract_created_at(path: str, model: str = None) -> str:
     """ Extracts date (YYYYMMDD) from path or filename using LLM. """
@@ -238,17 +246,17 @@ def extract_created_at(path: str, model: str = None) -> str:
     Hints:
     {hints}
     """
-    answer = ask_llm(prompt, model=model, num_ctx=2048, cap=8) or ''
+    answer = ask_llm(prompt, model=model, num_ctx=2048) or ''
     print(f'\t Created at: {answer}')
-    match = re.search(r'(\d{8})', answer)
+    match = re.search(r'(\d{8})', answer[-50:])
     if match:
         return match.group(1)
     return "00000000"
 
+
 def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
     """ Uses modular extraction calls to gather metadata. """
     print(f"🔍 Extracting metadata for: {path}")
-    
     return {
         "preacher": extract_preacher(path, model=model),
         "series": extract_series(path, model=model),
@@ -258,6 +266,7 @@ def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
         "created_at": extract_created_at(path, model=model),
         "original_path": path
     }
+
 
 def translate_metadata(metadata: dict) -> dict:
     """ Translates metadata fields to English using Christian context knowledge. """
@@ -274,20 +283,24 @@ def translate_metadata(metadata: dict) -> dict:
     Content:
     {metadata}
     """
-    data = ask_llm(prompt, num_ctx=2048, cap=256, format='json')
+    answer = ask_llm(prompt, num_ctx=2048, format_validation='json')
+    try:
+        data = json.loads(answer)
+    except Exception as e:
+        print(f'Failed to load answer: {answer}\n{e}')
+        raise e
     metadata['preacher_en'] = data.get('preacher_en')
     metadata['series_en'] = data.get('series_en')
     metadata['title_en'] = data.get('title_en')
     return metadata
 
+
 def get_sermon_dir(metadata: dict) -> str:
     """ Generates a unique, slugified directory path for the sermon. """
     preacher_slug = slugify(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown_preacher')
     series_slug = slugify(metadata.get('series_en') or metadata.get('series') or 'unamed_series')
-
     # Use scriptures string for slug
     scripture_slug = slugify(metadata.get('scriptures') or 'scripture0')
-
     sermon_slug = "{}_{}_{}_{}".format(
         slugify(str(metadata.get('sequence', '000'))),
         slugify(metadata.get('title_en') or metadata.get('title', 'untitled')),
@@ -296,11 +309,13 @@ def get_sermon_dir(metadata: dict) -> str:
     )
     return os.path.join(OUTPUT_ROOT, preacher_slug, series_slug, sermon_slug)
 
+
 def save_metadata(sermon_dir: str, metadata: dict):
     """ Persists metadata to metadata.json in the sermon directory. """
     metadata_path = os.path.join(sermon_dir, 'metadata.json')
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
+
 
 def transcript_audio(audio_path: str) -> str:
     from faster_whisper import WhisperModel
@@ -313,22 +328,19 @@ def transcript_audio(audio_path: str) -> str:
     text = ""
     for segment in segments:
         text += f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}\n"
-
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(text)
     return output_path
+
 
 def refine_transcript(path: str) -> str:
     output_path = path.replace('.txt', '_refined.txt')
     if os.path.exists(output_path):
         return output_path
-
     print(f"✍️ Refining transcript: {path}")
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-
     prompt = f"Refine this sermon transcript for punctuation, speaker identification, and pinyin errors. Keep it verbatim but clean it up for reading:\n\n{content[:2000]}" # Limit context
-
     content_refined = ask_llm(prompt, num_ctx=8192)
     if content_refined:
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -336,50 +348,46 @@ def refine_transcript(path: str) -> str:
         return output_path
     return path
 
+
 def convert_to_markdown(path: str) -> str:
     output_path = path.replace('.txt', '.md')
     if os.path.exists(output_path):
         return output_path
-
     print(f"📝 Generating Markdown: {output_path}")
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-
     md_content = f"# Sermon Transcript\n\n**Source:** {os.path.basename(path)}\n\n---\n\n{content}"
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(md_content)
     return output_path
 
+
 def convert_to_latex(path: str) -> str:
     output_path = path.replace('.md', '.tex')
     if os.path.exists(output_path):
         return output_path
-
     print(f"📄 Generating LaTeX: {output_path}")
     with open(path, 'r', encoding='utf-8') as f:
         md_content = f.read()
-
     try:
         import pypandoc
         tex_content = pypandoc.convert_text(md_content, 'latex', format='markdown')
     except Exception:
         # Fallback to simple template
         tex_content = f"\\documentclass{{article}}\n\\usepackage[utf8]{{inputenc}}\n\\begin{{document}}\n{md_content}\n\\end{{document}}"
-
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(tex_content)
     return output_path
+
 
 def convert_to_pdf(path: str) -> str:
     output_path = path.replace('.tex', '.pdf')
     if os.path.exists(output_path):
         return output_path
-
     print(f"📊 Generating PDF: {output_path}")
     source_md = path.replace('.tex', '.md')
     with open(source_md, 'r', encoding='utf-8') as f:
         content = f.read()
-
     try:
         from fpdf import FPDF
         pdf = FPDF()
@@ -393,15 +401,14 @@ def convert_to_pdf(path: str) -> str:
         print(f"⚠️ PDF generation failed: {e}")
     return output_path
 
+
 def translate_transcript(path: str) -> str:
     output_path = path.replace('_zh.txt', '_en.txt')
     if os.path.exists(output_path):
         return output_path
-
     print(f"🌐 Translating (Ollama): {path}")
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-
     # Process in chunks if too long
     chunk = content[:2500]
     prompt = f"""
@@ -414,6 +421,7 @@ def translate_transcript(path: str) -> str:
             f.write(translated_text)
         return output_path
     return path
+
 
 def text_to_speech(text_path: str, audio_path: str) -> str:
     output_path = audio_path.replace('original.mp3', 'audio_en.mp3')
@@ -450,14 +458,13 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
         return None
 
 
-
-def ask_llm(prompt: str, format: str=None, num_ctx: int = 4096, model: str = None, temperature: float = 0.0, cap: int = None) -> str|dict:
+def ask_llm(prompt: str, format_validation: str=None, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> str:
     """ Centralized helper for Ollama LLM communication. """
     try:
         response = ollama.generate(
             model=model or DEFAULT_MODEL,
             prompt=prompt,
-            format=format,
+            format=format_validation,
             options={
                 "temperature": temperature,
                 "show_think": False,
@@ -467,17 +474,13 @@ def ask_llm(prompt: str, format: str=None, num_ctx: int = 4096, model: str = Non
                 # Removing num_thread allows the server to optimize for hardware.
             }
         )
-        content = response['response']
-        # Remove <think>...</think> tags
-        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-        if cap:
-            assert len(content) <= cap, f'LLM response is too long: {len(content)} > {cap}'
-        if format == 'json':
-            return json.loads(content)
-        return content
     except Exception as e:
         print(f"⚠️ LLM Error with model {model or DEFAULT_MODEL}: {e}")
-        return ""
+        raise e
+    content = response['response']
+    # Remove <think>...</think> tags
+    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+    return content
 
 
 if __name__ == '__main__':
