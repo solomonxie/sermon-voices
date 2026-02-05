@@ -78,16 +78,16 @@ clean-output: ## Clean all generated outputs
 
 process: ## Run the full processing pipeline
 	@echo "$(BLUE)Starting full pipeline...$(NC)"
-	@PYTHONPATH=src $(PYTHON_VENV) src/main.py
+	@PYTHONPATH=. $(PYTHON_VENV) src/main.py
 
 extract-metadata: ## Extract metadata from blobs/ using LLM
 	@echo "$(BLUE)Extracting metadata...$(NC)"
-	@PYTHONPATH=src $(PYTHON_VENV) src/main.py --mode extract
+	@PYTHONPATH=. $(PYTHON_VENV) src/main.py --mode extract
 	@echo "$(GREEN)✓ Metadata extraction complete$(NC)"
 
 reorganize-files: ## Reorganize files based on extracted metadata
 	@echo "$(BLUE)Reorganizing files...$(NC)"
-	@PYTHONPATH=src $(PYTHON_VENV) src/main.py --mode reorganize
+	@PYTHONPATH=. $(PYTHON_VENV) src/main.py --mode reorganize
 	@echo "$(GREEN)✓ File reorganization complete$(NC)"
 
 # ============================================================================
@@ -113,3 +113,11 @@ models-info: ## Show info about downloaded models
 	else \
 		echo "$(RED)Virtual environment not created$(NC)"; \
 	fi
+
+
+# ============================================================================
+# Testing Commands
+# ============================================================================
+
+test:
+	@PYTHONPATH=. $(VENV_DIR)/bin/pytest -svra tests/
