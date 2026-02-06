@@ -8,8 +8,18 @@ Sermon Voices is a high-performance pipeline designed to process sermon audio/vi
 
 1.  **Local-First Processing**: 100% of processing occurs on local hardware (optimized for M1/Apple Silicon). No cloud APIs are used, ensuring privacy and cost-efficiency.
 2.  **LLM-Driven Metadata**: Instead of fragile regex-based parsing, we use local LLMs (via Ollama) to extract structured metadata from file paths and names.
-3.  **Idempotent Execution**: The system uses a state tracking mechanism (JSON-based) and content hashing to ensure that re-running the pipeline only processes new or changed files.
-4.  **Organized Slugified Output**: All outputs are organized into a clean, English-slugified directory structure suitable for object storage indexing.
+
+1.  **Metadata Phase (`src/process_metadata.py`)**:
+    - Scans `blobs/` for new files.
+    - Uses LLM to extract metadata (preacher, series, title, etc.).
+    - Translates metadata to English.
+    - Moves/copies files to a structured directory in `output/`.
+    - **Checkpoint**: Uses `processed.txt` to track original files that have been successfully processed.
+
+2.  **Audio Phase (`src/process_audio.py`)**:
+    - Scans `output/` for folders containing `metadata.json`.
+    - **Idempotency**: Each processing step (chunking, transcription, translation, TTS) checks for the existence of its respective output file. If the file exists, the step is skipped.
+    - Steps are independent and can be resumed at any point.
 
 ### Core Workflow
 
@@ -76,11 +86,11 @@ The central source of truth for each sermon file.
 The goal is to keep all assets for a single sermon in one place, easily accessible and ready for object storage.
 
 **Pattern:**
-`output/<preacher_en_slug>/<series_en_slug>/<sequence>_<title_en_slug>_<verse_en_slug>_<created_at>/`
+`output/<preacher_en_slug>/<series_en_slug>/<sequence>_<title_en_slug>/`
 
 **Example:**
 ```
-output/stephen-tong/romans/001_the-power-of-god_1-16-17_20240115/
+output/stephen-tong/romans/001_the-power-of-god/
 ├── original.mp3           # Original audio file
 ├── metadata.json          # Extracted metadata
 ├── transcript_zh.txt      # Refined Chinese transcript
@@ -93,8 +103,8 @@ This structure makes it "easy to locate" everything related to a specific sermon
 
 ## Implementation Components (Python)
 
-### 1. Metadata Extractor (`src/main.py`)
-Uses local LLM prompts to "guess" and extract structured data from chaotic folder structures and filenames found in `blobs/`.
+### 1. Metadata Extractor (`src/process_metadata.py`)
+Uses local LLM prompts to "guess" and extract structured data from chaotic folder structures and filenames found in `blobs/`. Can be run independently.
 
 ### 2. Transcription Engine
 Leverages `faster-whisper` for high-speed local transcription, utilizing CoreML/MPS on Apple Silicon.
@@ -109,5 +119,5 @@ Uses Ollama (e.g., `llama3`) to correct OCR-like errors in transcripts, improve 
 ## Technical Decisions
 
 - **Slugification**: Using `python-slugify` to ensure all file paths are URL-safe and consistent.
-- **Persistence**: Using `output/processing_status.json` as a lightweight database of all known files and their current state.
-- **Communication**: Components communicate via structured JSON objects passed between function calls.
+- **Persistence**: Using `output/processed.txt` to track processed original files for the metadata phase. Audio phase relies on file existence in the output directory for idempotency.
+- **Configuration**: Centralized configuration in `src/constants.py`.
