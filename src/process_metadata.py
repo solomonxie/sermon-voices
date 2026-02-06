@@ -2,14 +2,12 @@ import os
 import json
 import shutil
 import re
+from glob import glob
 from slugify import slugify
 
 from common import ask_llm
+from constants import OUTPUT_ROOT, BLOBS_ROOT, PROCESSED_LOG, TRANSLATION_MAP_PATH
 
-OUTPUT_ROOT = './output'
-BLOBS_ROOT = './blobs'
-PROCESSED_LOG = os.path.join(OUTPUT_ROOT, 'processed.txt')
-TRANSLATION_MAP_PATH = os.path.join(OUTPUT_ROOT, 'translation_map.txt')
 
 
 def main() -> None:
@@ -49,8 +47,6 @@ def process_metadata(path: str) -> None:
     # 1.1 Translation
     metadata = translate_metadata(metadata)
 
-    # 1.2 Initial Status
-    metadata['status'] = ["ok:metadata"]
 
     # 2. Directory Setup
     sermon_dir = get_sermon_dir(metadata)

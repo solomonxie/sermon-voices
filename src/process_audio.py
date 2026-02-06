@@ -5,7 +5,8 @@ from glob import glob
 from pydub import AudioSegment
 
 from common import ask_llm
-from extract_metadata import save_metadata
+from constants import OUTPUT_ROOT, BLOBS_ROOT
+from process_metadata import save_metadata
 
 
 def main() -> None:
@@ -20,97 +21,74 @@ def main() -> None:
 
 
 def process_audio(metadata_path: str) -> None:
-    """ Processes audio tasks based on the current status in metadata.json. """
+    """ Processes audio tasks based on the existence of target files. """
     with open(metadata_path, 'r', encoding='utf-8') as f:
         metadata = json.load(f)
 
     sermon_dir = os.path.dirname(metadata_path)
     audio_path = os.path.join(sermon_dir, 'original.mp3')
     chunks_dir = os.path.join(sermon_dir, 'chunks')
-    status = metadata.get('status', [])
 
     if not os.path.exists(audio_path):
         print(f"⚠️ Original audio not found for {metadata.get('title')}")
         return
 
-    if "ok:metadata" not in status:
-        return
-
-    # Skip if fully completed
-    if "ok:refined_en" in status:
-        return
-
-    print(f"\n⚙️ Processing Audio (Chunked): {metadata.get('title')} ({metadata_path})")
+    print(f"\n⚙️ Processing Audio (Idempotent): {metadata.get('title')} ({metadata_path})")
 
     # 1. Chunking
-    if "ok:chunks" not in status:
-        split_audio_into_chunks(audio_path)
-        status.append("ok:chunks")
-        save_metadata(sermon_dir, metadata)
+    split_audio_into_chunks(audio_path)
 
     # 2. Chunk Transcription
-    chunk_files = sorted(glob(os.path.join(chunks_dir, '*.mp3')))
-    if "ok:chunk_transcripts" not in status:
+    chunk_files = sorted(glob(os.path.join(chunks_dir, '0*.mp3')))
+    if chunk_files:
         print(f"🎙️ Transcribing {len(chunk_files)} chunks...")
         for cf in chunk_files:
             transcript_audio(cf)
-        status.append("ok:chunk_transcripts")
-        save_metadata(sermon_dir, metadata)
 
     # 3. Chunk Translation
-    chunk_transcripts = sorted(glob(os.path.join(chunks_dir, '0*.txt'))) # Matches 001.txt, etc.
-    if "ok:chunk_translations" not in status:
+    chunk_transcripts = sorted(glob(os.path.join(chunks_dir, '0*.txt')))
+    # Filter to only include base transcripts (not translated/refined)
+    chunk_transcripts = [ct for ct in chunk_transcripts if not ct.endswith(('_en.txt', '_refined.txt'))]
+    if chunk_transcripts:
         print(f"🌐 Translating {len(chunk_transcripts)} chunk transcripts...")
         for ct in chunk_transcripts:
             translate_transcript(ct)
-        status.append("ok:chunk_translations")
-        save_metadata(sermon_dir, metadata)
 
     # 4. Combine Translations
     combined_en_path = os.path.join(sermon_dir, 'transcript_en_combined.txt')
-    if "ok:combined_en" not in status:
+    if not os.path.exists(combined_en_path):
         print(f"🔗 Combining translated chunks...")
         chunk_translations = sorted(glob(os.path.join(chunks_dir, '0*_en.txt')))
-        combined_text = ""
-        for ct in chunk_translations:
-            with open(ct, 'r', encoding='utf-8') as f:
-                combined_text += f.read() + "\n\n"
-        with open(combined_en_path, 'w', encoding='utf-8') as f:
-            f.write(combined_text)
-        status.append("ok:combined_en")
-        save_metadata(sermon_dir, metadata)
+        if chunk_translations:
+            combined_text = ""
+            for ct in chunk_translations:
+                with open(ct, 'r', encoding='utf-8') as f:
+                    combined_text += f.read() + "\n\n"
+            with open(combined_en_path, 'w', encoding='utf-8') as f:
+                f.write(combined_text)
 
     # 5. Refine Combined Translation
     refined_en_path = os.path.join(sermon_dir, 'transcript_en_refined.txt')
-    if "ok:refined_en" not in status:
+    if os.path.exists(combined_en_path) and not os.path.exists(refined_en_path):
         print(f"✍️ Refining final translation...")
-        refined_content = refine_transcript(combined_en_path)
-        if refined_content and refined_content != combined_en_path:
-            status.append("ok:refined_en")
-            save_metadata(sermon_dir, metadata)
+        refine_transcript(combined_en_path)
 
     # 6. Document Conversion (Markdown/PDF)
-    if "ok:markdown" not in status and "ok:refined_en" in status:
-        refined_en_path = os.path.join(sermon_dir, 'transcript_en_refined.txt')
-        markdown_path = convert_to_markdown(refined_en_path)
-        if markdown_path:
-            status.append("ok:markdown")
-            save_metadata(sermon_dir, metadata)
-
-    if "ok:pdf" not in status and "ok:markdown" in status:
+    if os.path.exists(refined_en_path):
         markdown_path = os.path.join(sermon_dir, 'transcript_en_refined.md')
-        latex_path = convert_to_latex(markdown_path)
-        convert_to_pdf(latex_path)
-        status.append("ok:pdf")
-        save_metadata(sermon_dir, metadata)
+        if not os.path.exists(markdown_path):
+            convert_to_markdown(refined_en_path)
+
+        pdf_path = os.path.join(sermon_dir, 'transcript_en_refined.pdf')
+        if os.path.exists(markdown_path) and not os.path.exists(pdf_path):
+            latex_path = convert_to_latex(markdown_path)
+            convert_to_pdf(latex_path)
 
     # 7. TTS
-    if "ok:tts" not in status and "ok:refined_en" in status:
-        refined_en_path = os.path.join(sermon_dir, 'transcript_en_refined.txt')
-        audio_en_path = text_to_speech(refined_en_path, audio_path)
-        if audio_en_path:
-            status.append("ok:tts")
-            save_metadata(sermon_dir, metadata)
+    audio_en_path = os.path.join(sermon_dir, 'audio_en.mp3')
+    if os.path.exists(refined_en_path) and not os.path.exists(audio_en_path):
+        text_to_speech(refined_en_path, audio_path)
+        if os.path.exists(audio_en_path):
             print(f"✅ Audio processing complete: {metadata['title']}")
 
 

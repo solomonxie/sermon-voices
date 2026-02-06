@@ -49,24 +49,43 @@ mkdir -p blobs/my_preacher
 cp sermon.mp3 blobs/my_preacher/
 
 # 2. Run the main pipeline (Metadata extraction + Audio processing)
-python src/main.py
+make process
 ```
 
 ## Workflow
 
-The processing pipeline is split into two main phases, orchestrated by `src/main.py`:
+### Run the Pipeline
 
-1.  **Metadata Extraction** ([extract_metadata.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/extract_metadata.py)):
+The pipeline is split into two independent, idempotent phases:
+
+1.  **Metadata Extraction**: Extracts metadata from audio files in `blobs/` and organizes them into the `output/` directory. Completion is tracked in `output/processed.txt`.
+    ```bash
+    make metadata
+    ```
+
+2.  **Audio Processing**: Performs transcription, translation, and TTS. Each step checks for existing output files (e.g., `_refined.txt`, `audio_en.mp3`) and skips them if they exist, allowing for safe resumes.
+    ```bash
+    make audio
+    ```
+
+To run both phases in sequence:
+```bash
+make process
+```
+
+The processing pipeline is split into two main phases, each functioning as an independent entry point:
+
+1.  **Metadata Extraction** ([process_metadata.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/process_metadata.py)):
     -   Scans `blobs/` for new MP3 files.
     -   Uses LLMs to extract preacher, series, title, scripture, and date from file paths.
     -   Translates metadata to English and creates a slugified directory structure in `output/`.
+    -   Completion is tracked in `output/processed.txt`.
 2.  **Audio Processing** ([process_audio.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/process_audio.py)):
     -   Chunking the audio for efficient processing.
     -   Transcribing (Whisper) and Translating (Ollama) each chunk.
     -   Combining and Refining the final English transcript.
     -   Converting to Markdown/PDF and generating TTS audio with cloned voices.
-
-Running `python src/main.py` will execute both phases sequentially. The pipeline is idempotent and will skip already processed files.
+    -   Idempotent execution: skips steps if output files already exist.
 
 ## Project Structure
 
