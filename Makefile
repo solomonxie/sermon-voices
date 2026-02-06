@@ -49,15 +49,23 @@ clean-output:
 	@echo "Cleaning output directory..."
 	rm -rf output/*
 
-process: metadata audio
+process: metadata audio pdf tts
 
 metadata:
 	@echo "Running Phase 1: Metadata Extraction..."
 	@PYTHONPATH=. $(PYTHON_VENV) src/process_metadata.py
 
 audio:
-	@echo "Running Phase 2: Audio Processing..."
+	@echo "Running Phase 2: Audio Transcription & Translation (ZH -> EN)..."
 	@PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py
+
+pdf:
+	@echo "Running Phase 3: Document Generation (Markdown/LaTeX/PDF)..."
+	@PYTHONPATH=. $(PYTHON_VENV) src/process_pdf.py
+
+tts:
+	@echo "Running Phase 4: Text-to-Speech (Audio EN)..."
+	@PYTHONPATH=. $(PYTHON_VENV) src/process_tts.py
 
 check-deps:
 	@$(PYTHON) --version
