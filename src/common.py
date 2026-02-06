@@ -3,7 +3,7 @@ import json
 import re
 import os
 
-DEFAULT_MODEL = 'qwen3:8b'
+from constants import DEFAULT_MODEL
 
 
 def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> dict:
