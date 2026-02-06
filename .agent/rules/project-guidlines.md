@@ -1,6 +1,9 @@
-- This project is Python-based
+---
+trigger: always_on
+---
+
+- This project is Python-based, version at 3.12
 - All commands should reflect in Makefile
-- Must use virtualenv for Python at venv/ , and python executables should be in venv/bin/
 - Prioritize local LLM models
 - Follows TDD approach if possible
 - Any new designs or features should be reflected in README.md or DESIGN.md
