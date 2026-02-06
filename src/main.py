@@ -13,6 +13,7 @@ DEFAULT_MODEL = 'qwen3:8b'
 OUTPUT_ROOT = './output'
 BLOBS_ROOT = './blobs'
 PROCESSED_LOG = os.path.join(OUTPUT_ROOT, 'processed.txt')
+TRANSLATION_MAP_PATH = os.path.join(OUTPUT_ROOT, 'translation_map.txt')
 
 
 def main():
@@ -329,15 +330,43 @@ def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
     }
 
 
+def load_translation_cache() -> Dict[str, str]:
+    """ Loads the translation map from output/translation_map.txt. """
+    cache = {}
+    if os.path.exists(TRANSLATION_MAP_PATH):
+        try:
+            with open(TRANSLATION_MAP_PATH, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if ':' in line:
+                        original, translation = line.split(':', 1)
+                        cache[original.strip()] = translation.strip()
+        except Exception as e:
+            print(f"⚠️ Error loading translation cache: {e}")
+    return cache
+
+
+def save_translation_cache(cache: Dict[str, str]):
+    """ Saves the translation map to output/translation_map.txt. """
+    try:
+        with open(TRANSLATION_MAP_PATH, 'w', encoding='utf-8') as f:
+            # Sort keys for consistency
+            for original in sorted(cache.keys()):
+                f.write(f"{original}: {cache[original]}\n")
+    except Exception as e:
+        print(f"⚠️ Error saving translation cache: {e}")
+
+
 def translate_metadata(metadata: dict) -> dict:
     """ Translates metadata fields to English using Christian context knowledge. """
+    cache = load_translation_cache()
+
     hints = 'Preacher: {}; Series: {}; Title: {}'.format(metadata['preacher'], metadata['series'], metadata['title'])
     prompt = f"""
     Translate the metadata.
     All translations should be in the context of Bible and Christianity knowledge.
     Translation prioritize knowledge, otherwise prefer phonetic translation.
     Return JSON object follow example below:
-    Example intput: {{"preacher": "唐崇容", "series": "创世纪", "title": "上帝的大能"}}
+    Example intput: {{"preacher": "唐崇荣", "series": "创世纪", "title": "上帝的大能"}}
     {{"preacher_en": "Stephen Tong", "series_en": "Genesis", "title_en": "The Power of God"}}
     If uncertain, use "Unknown" as value.
     Content:
@@ -345,9 +374,16 @@ def translate_metadata(metadata: dict) -> dict:
     """
     resp = ask_llm(prompt, num_ctx=1024)
     print(f'\t Translated metadata: {resp}')
-    metadata['preacher_en'] = resp.get('preacher_en')
-    metadata['series_en'] = resp.get('series_en')
+
+    # Use cached translation if available for preacher and series
+    metadata['preacher_en'] = cache.get(metadata['preacher']) or resp.get('preacher_en') or 'Unknown'
+    metadata['series_en'] = cache.get(metadata['series']) or resp.get('series_en') or 'Unknown'
     metadata['title_en'] = resp.get('title_en')
+
+    # Save cache if updated
+    cache[metadata['preacher']] = metadata['preacher_en']
+    cache[metadata['series']] = metadata['series_en']
+    save_translation_cache(cache)
     return metadata
 
 
@@ -355,12 +391,10 @@ def get_sermon_dir(metadata: dict) -> str:
     """ Generates a unique, slugified directory path for the sermon. """
     preacher_slug = slugify(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown_preacher')
     series_slug = slugify(metadata.get('series_en') or metadata.get('series') or 'unamed_series')
-    # Use scripture string for slug
-    scripture_slug = slugify(metadata.get('scripture') or 'scripture0')
-    sermon_slug = "{}_{}_{}_{}".format(
+
+    sermon_slug = "{}_{}_{}".format(
         slugify(str(metadata.get('sequence', '000'))),
         slugify(metadata.get('title_en') or metadata.get('title', 'untitled')),
-        slugify(scripture_slug),
         slugify(str(metadata.get('created_at', '00000000')))
     )
     return os.path.join(OUTPUT_ROOT, preacher_slug, series_slug, sermon_slug)
