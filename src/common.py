@@ -4,10 +4,6 @@ import re
 import os
 
 DEFAULT_MODEL = 'qwen3:8b'
-OUTPUT_ROOT = './output'
-BLOBS_ROOT = './blobs'
-PROCESSED_LOG = os.path.join(OUTPUT_ROOT, 'processed.txt')
-TRANSLATION_MAP_PATH = os.path.join(OUTPUT_ROOT, 'translation_map.txt')
 
 
 def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> dict:
