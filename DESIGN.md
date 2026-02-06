@@ -86,11 +86,11 @@ The central source of truth for each sermon file.
 The goal is to keep all assets for a single sermon in one place, easily accessible and ready for object storage.
 
 **Pattern:**
-`output/<preacher_en_slug>/<series_en_slug>/<sequence>_<title_en_slug>_<verse_en_slug>_<created_at>/`
+`output/<preacher_en_slug>/<series_en_slug>/<sequence>_<title_en_slug>/`
 
 **Example:**
 ```
-output/stephen-tong/romans/001_the-power-of-god_1-16-17_20240115/
+output/stephen-tong/romans/001_the-power-of-god/
 ├── original.mp3           # Original audio file
 ├── metadata.json          # Extracted metadata
 ├── transcript_zh.txt      # Refined Chinese transcript

@@ -3,7 +3,7 @@ import json
 import re
 import os
 
-from constants import DEFAULT_MODEL
+from src.constants import DEFAULT_MODEL, TRANSLATION_MAP_PATH
 
 
 def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> dict:
@@ -34,3 +34,18 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
         print(f'Failed to load answer to json: {content}\n{e}')
         raise e
     return data
+
+
+def load_translation_cache() -> dict[str, str]:
+    """ Loads the translation map from output/translation_map.txt. """
+    cache = {}
+    if os.path.exists(TRANSLATION_MAP_PATH):
+        try:
+            with open(TRANSLATION_MAP_PATH, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if ':' in line:
+                        original, translation = line.split(':', 1)
+                        cache[original.strip()] = translation.strip()
+        except Exception as e:
+            print(f"⚠️ Error loading translation cache: {e}")
+    return cache

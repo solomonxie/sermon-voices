@@ -4,9 +4,9 @@ import shutil
 from glob import glob
 from pydub import AudioSegment
 
-from common import ask_llm
-from constants import OUTPUT_ROOT, BLOBS_ROOT
-from process_metadata import save_metadata
+from src.common import ask_llm, load_translation_cache
+from src.constants import OUTPUT_ROOT, BLOBS_ROOT
+from src.process_metadata import save_metadata
 
 
 def main() -> None:
