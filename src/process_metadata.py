@@ -5,8 +5,8 @@ import re
 from glob import glob
 from slugify import slugify
 
-from common import ask_llm
-from constants import OUTPUT_ROOT, BLOBS_ROOT, PROCESSED_LOG, TRANSLATION_MAP_PATH
+from src.common import ask_llm, load_translation_cache
+from src.constants import OUTPUT_ROOT, BLOBS_ROOT, PROCESSED_LOG, TRANSLATION_MAP_PATH
 
 
 
@@ -193,21 +193,6 @@ def extract_metadata(path: str, model: str | None = None) -> dict[str, any]:
     }
 
 
-def load_translation_cache() -> dict[str, str]:
-    """ Loads the translation map from output/translation_map.txt. """
-    cache = {}
-    if os.path.exists(TRANSLATION_MAP_PATH):
-        try:
-            with open(TRANSLATION_MAP_PATH, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if ':' in line:
-                        original, translation = line.split(':', 1)
-                        cache[original.strip()] = translation.strip()
-        except Exception as e:
-            print(f"⚠️ Error loading translation cache: {e}")
-    return cache
-
-
 def save_translation_cache(cache: dict[str, str]) -> None:
     """ Saves the translation map to output/translation_map.txt. """
     try:
@@ -255,10 +240,9 @@ def get_sermon_dir(metadata: dict[str, any]) -> str:
     preacher_slug = slugify(str(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown_preacher'))
     series_slug = slugify(str(metadata.get('series_en') or metadata.get('series') or 'unamed_series'))
 
-    sermon_slug = "{}_{}_{}".format(
+    sermon_slug = "{}_{}".format(
         slugify(str(metadata.get('sequence', '000'))),
-        slugify(str(metadata.get('title_en') or metadata.get('title', 'untitled'))),
-        slugify(str(metadata.get('created_at', '00000000')))
+        slugify(str(metadata.get('title_en') or metadata.get('title', 'untitled')))
     )
     return os.path.join(OUTPUT_ROOT, preacher_slug, series_slug, sermon_slug)
 

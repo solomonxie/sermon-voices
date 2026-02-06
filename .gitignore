@@ -2,6 +2,7 @@ blobs/*
 !blobs/README.md
 output/*
 !output/README.md
+!output/translation_map.txt
 .DS_Store
 *.pyc
 venv/*
