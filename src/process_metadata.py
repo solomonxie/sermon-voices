@@ -5,7 +5,7 @@ import re
 from glob import glob
 from slugify import slugify
 
-from src.common import ask_llm, load_translation_cache
+from src.common import ask_llm, load_translation_cache, pad_numbers
 from src.constants import OUTPUT_ROOT, BLOBS_ROOT, PROCESSED_LOG, TRANSLATION_MAP_PATH
 
 
@@ -67,7 +67,7 @@ def process_metadata(path: str) -> None:
 
 
 def extract_preacher(path: str, model: str | None = None) -> str:
-    hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
+    hints = pad_numbers('\n'.join(os.path.dirname(path).replace('blobs/', '').split('/')))
     prompt = f"""
     Find the most probable preacher's name from the given path.
     Return JSON with ONLY the name in its ORIGINAL language as found in the path.
@@ -84,7 +84,7 @@ def extract_preacher(path: str, model: str | None = None) -> str:
 
 
 def extract_series(path: str, model: str | None = None) -> str:
-    hints = '\n'.join(os.path.dirname(path).replace('blobs/', '').split('/'))
+    hints = pad_numbers('\n'.join(os.path.dirname(path).replace('blobs/', '').split('/')))
     prompt = f"""
     Find the most probable Bible book or sermon series name from the given hints.
     Return JSON with ONLY the name in its ORIGINAL language as found in the path.
@@ -101,6 +101,7 @@ def extract_series(path: str, model: str | None = None) -> str:
 
 
 def extract_title(path: str, model: str | None = None) -> str:
+    hints = pad_numbers(path)
     prompt = f"""
     Find the specific sermon title from the given hints.
     Return JSON with ONLY the title in its ORIGINAL language as found in the path.
@@ -137,7 +138,7 @@ def extract_scripture(path: str, model: str | None = None) -> str:
 
 
 def extract_sequence(path: str, model: str | None = None) -> str:
-    hints = os.path.basename(path)
+    hints = pad_numbers(os.path.basename(path))
     prompt = f"""
     Find the sequence number or lecture number of the sermon from the given hints.
     If no sequence is found, return "000".

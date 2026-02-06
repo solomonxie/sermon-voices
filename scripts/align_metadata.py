@@ -8,7 +8,7 @@ from pathlib import Path
 from slugify import slugify
 
 from src.constants import OUTPUT_ROOT
-from src.common import load_translation_cache
+from src.common import load_translation_cache, pad_numbers
 from src.process_metadata import get_sermon_dir, save_metadata, save_translation_cache
 
 
@@ -19,6 +19,8 @@ def cleanup_title(title: str, sequence: str) -> str:
     """
     if not title or not sequence:
         return title
+    
+    title = pad_numbers(title)
 
     padded_seq = str(sequence).zfill(3)
     int_seq = str(int(sequence))
@@ -36,6 +38,7 @@ def cleanup_title(title: str, sequence: str) -> str:
 
 def extract_sequence_from_title(title: str) -> str:
     """ Attempts to find a number in the title to use as a sequence. """
+    title = pad_numbers(title)
     match = re.search(r'(\d+)', title)
     if match:
         return match.group(1).zfill(3)

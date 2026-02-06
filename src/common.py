@@ -49,3 +49,18 @@ def load_translation_cache() -> dict[str, str]:
         except Exception as e:
             print(f"⚠️ Error loading translation cache: {e}")
     return cache
+
+
+def pad_numbers(text: str) -> str:
+    """
+    Ensures there is a space between numbers and adjacent words/characters.
+    Example: "Title01" -> "Title 01", "20230621Title" -> "20230621 Title"
+    """
+    if not text:
+        return text
+    # Add space between non-digit and digit
+    text = re.sub(r'([^\s\d])(\d+)', r'\1 \2', text)
+    # Add space between digit and non-digit
+    text = re.sub(r'(\d+)([^\s\d])', r'\1 \2', text)
+    # Collapse multiple spaces
+    return re.sub(r'\s+', ' ', text).strip()
