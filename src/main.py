@@ -18,25 +18,25 @@ def main():
     """ Main entry point for the sermon processing pipeline. """
     print(f"🚀 Starting sermon processing pipeline...")
 
-    # Phase 1: Metadata extraction
     print(f"\n--- Phase 1: Metadata Extraction ---")
     files = glob(os.path.join(BLOBS_ROOT, '**/*.mp3'), recursive=True)
     if not files:
         print(f"⚠️ No MP3 files found in {BLOBS_ROOT}")
-    else:
-        # Load processed files log
-        processed_files = set()
-        if os.path.exists(PROCESSED_LOG):
-            with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
-                processed_files = set(line.strip() for line in f if line.strip())
-        for path in files:
-            abs_path = os.path.abspath(path)
-            if abs_path in processed_files:
-                continue
-            try:
-                process_metadata(path)
-            except Exception as e:
-                print(f"❌ Error extracting metadata for {path}: {str(e)}")
+        return
+    # Phase 1: Metadata extraction
+    processed_files = set()
+    if os.path.exists(PROCESSED_LOG):
+        with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
+            processed_files = set(line.strip() for line in f if line.strip())
+    for path in files:
+        abs_path = os.path.abspath(path)
+        if abs_path in processed_files:
+            print(f'Skip processed file: {path}')
+            continue
+        try:
+            process_metadata(path)
+        except Exception as e:
+            print(f"❌ Error extracting metadata for {path}: {str(e)}")
 
     # Phase 2: Audio Processing
     print(f"\n--- Phase 2: Audio Processing ---")
@@ -78,7 +78,7 @@ def process_metadata(path: str):
     # 5. Add to processed log (Phase 1 complete)
     with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
         f.write(f"{os.path.abspath(metadata['original_path'])}\n")
-    print(f"✅ Metadata harvested and logged: {metadata['title']}")
+    print(f"✅ Metadata extracted: {metadata['title']}")
 
 
 def process_audio(metadata_path: str):
@@ -219,7 +219,7 @@ def extract_scripture(path: str, model: str = None) -> str:
     resp = ask_llm(prompt, model=model, num_ctx=1024)
     answer = resp.get('scripture') or 'ch0:v0'
     print(f'\t Scripture: {answer}')
-    return answer[-20:]
+    return answer[-50:]
 
 
 def extract_sequence(path: str, model: str = None) -> str:
@@ -281,20 +281,20 @@ def extract_metadata(path: str, model: str = None) -> Dict[str, Any]:
 
 def translate_metadata(metadata: dict) -> dict:
     """ Translates metadata fields to English using Christian context knowledge. """
+    hints = 'Preacher: {}; Series: {}; Title: {}'.format(metadata['preacher'], metadata['series'], metadata['title'])
     prompt = f"""
     Translate the metadata.
     All translations should be in the context of Bible and Christianity knowledge.
     Translation prioritize knowledge, otherwise prefer phonetic translation.
-    Return JSON object including keys in example below:
-    {{
-        "preacher_en": "John Piper",
-        "series_en": "Ecclesiastes",
-        "title_en": "The Power of God"
-    }}
+    Return JSON object follow example below:
+    Example intput: {{"preacher": "唐崇容", "series": "创世纪", "title": "上帝的大能"}}
+    {{"preacher_en": "Stephen Tong", "series_en": "Genesis", "title_en": "The Power of God"}}
+    If uncertain, use "Unknown" as value.
     Content:
-    {metadata}
+    {hints}
     """
-    resp = ask_llm(prompt, num_ctx=2048)
+    resp = ask_llm(prompt, num_ctx=1024)
+    print(f'\t Translated metadata: {resp}')
     metadata['preacher_en'] = resp.get('preacher_en')
     metadata['series_en'] = resp.get('series_en')
     metadata['title_en'] = resp.get('title_en')
@@ -418,7 +418,10 @@ def translate_transcript(path: str) -> str:
     # Process in chunks if too long
     chunk = content[:2500]
     prompt = f"""
-    Translate the following sermon transcript to English. Ensure biblical and theological accuracy and clear flow:
+    Translate the following sermon transcript to English.
+    Use native american english terms, idioms and phrases to be as native as possible.
+    Ensure biblical and theological accuracy and clear flow.
+    Content:
     {chunk}
     """
     translated_text = ask_llm(prompt, num_ctx=8192)
