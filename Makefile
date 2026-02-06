@@ -17,7 +17,23 @@ help:
 	@echo "  make check-deps     Verify dependencies"
 	@echo "  make test           Run tests"
 
-setup: setup-python setup-ollama
+setup: setup-system setup-python setup-ollama
+
+setup-system:
+	@echo "Installing system dependencies..."
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		if ! command -v brew >/dev/null 2>&1; then \
+			echo "Homebrew not found. Please install it first: https://brew.sh/"; \
+			exit 1; \
+		fi; \
+		if ! command -v ffmpeg >/dev/null 2>&1; then \
+			brew install ffmpeg; \
+		else \
+			echo "ffmpeg already installed."; \
+		fi \
+	else \
+		echo "Unsupported OS for automatic system setup. Please install ffmpeg manually."; \
+	fi
 
 setup-python:
 	@echo "Setting up Python environment..."
