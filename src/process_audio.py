@@ -4,8 +4,19 @@ import shutil
 from glob import glob
 from pydub import AudioSegment
 
-from common import ask_llm, OUTPUT_ROOT
+from common import ask_llm
 from extract_metadata import save_metadata
+
+
+def main() -> None:
+    print(f"\n--- Phase 2: Audio Processing ---")
+    metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
+    for metadata_path in metadata_files:
+        try:
+            process_audio(metadata_path)
+        except Exception as e:
+            print(f"❌ Error processing audio for {metadata_path}: {str(e)}")
+
 
 
 def process_audio(metadata_path: str) -> None:
@@ -296,3 +307,7 @@ def text_to_speech(text_path: str, audio_path: str) -> str | None:
     except Exception as e:
         print(f"⚠️ TTS generation failed: {e}. Check if 'TTS' library is properly configured.")
         return None
+
+
+if __name__ == '__main__':
+    main()

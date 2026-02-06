@@ -2,10 +2,39 @@ import os
 import json
 import shutil
 import re
-
 from slugify import slugify
 
-from common import ask_llm, DEFAULT_MODEL, OUTPUT_ROOT, PROCESSED_LOG, TRANSLATION_MAP_PATH
+from common import ask_llm
+
+OUTPUT_ROOT = './output'
+BLOBS_ROOT = './blobs'
+PROCESSED_LOG = os.path.join(OUTPUT_ROOT, 'processed.txt')
+TRANSLATION_MAP_PATH = os.path.join(OUTPUT_ROOT, 'translation_map.txt')
+
+
+def main() -> None:
+    print(f"🚀 Starting sermon processing pipeline...")
+    print(f"\n--- Phase 1: Metadata Extraction ---")
+    files = glob(os.path.join(BLOBS_ROOT, '**/*.mp3'), recursive=True)
+    if not files:
+        print(f"⚠️ No MP3 files found in {BLOBS_ROOT}")
+        return
+    processed_files = set()
+    if os.path.exists(PROCESSED_LOG):
+        try:
+            with open(PROCESSED_LOG, 'r', encoding='utf-8') as f:
+                processed_files = set(line.strip() for line in f if line.strip())
+        except Exception as e:
+            print(f"⚠️ Error reading processed log: {e}")
+    for path in files:
+        abs_path = os.path.abspath(path)
+        if abs_path in processed_files:
+            # print(f'Skip processed file: {path}')
+            continue
+        try:
+            process_metadata(path)
+        except Exception as e:
+            print(f"❌ Error extracting metadata for {path}: {str(e)}")
 
 
 def process_metadata(path: str) -> None:
@@ -243,3 +272,9 @@ def save_metadata(sermon_dir: str, metadata: dict[str, any]) -> None:
     metadata_path = os.path.join(sermon_dir, 'metadata.json')
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
+if __name__ == '__main__':
+    if not os.path.exists(OUTPUT_ROOT):
+        os.makedirs(OUTPUT_ROOT)
+    main()
