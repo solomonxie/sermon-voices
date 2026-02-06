@@ -13,10 +13,11 @@ def main() -> None:
             process_audio(metadata_path)
         except Exception as e:
             print(f"❌ Error processing audio for {metadata_path}: {str(e)}")
+        break  # debug----------
 
 
 def process_audio(metadata_path: str) -> None:
-    """ 
+    """
     Transcribes, refines, and translates audio transcript.
     Leverages natural segmentation from transcription.
     """
@@ -34,29 +35,40 @@ def process_audio(metadata_path: str) -> None:
 
     # 1. Incremental Transcription, Refinement, and Translation
     print(f"🎙️ Processing audio segments: {audio_path}")
-    full_refined_zh = ""
-    full_translated_en = ""
     
+    transcript_zh_path = os.path.join(sermon_dir, 'transcript_zh.txt')
+    translation_en_path = os.path.join(sermon_dir, 'translation_en.txt')
+    transcript_zh_tmp = transcript_zh_path + ".tmp"
+    translation_en_tmp = translation_en_path + ".tmp"
+
+    # Clear existing tmp files
+    for tmp_file in [transcript_zh_tmp, translation_en_tmp]:
+        if os.path.exists(tmp_file):
+            os.remove(tmp_file)
+
     for segment_text in transcript_audio(audio_path):
+        print('Processed segment: ' + segment_text[:100] + '...')
         # 1a. Refine ZH Transcript Segment
         refined_zh = refine_transcript(segment_text)
-        full_refined_zh += refined_zh + "\n\n"
-        
+        print('Refined segment as: ' + refined_zh[:100] + '...')
+        with open(transcript_zh_tmp, 'a', encoding='utf-8') as f:
+            f.write(refined_zh + "\n\n")
+
         # 1b. Translate to EN Segment (Native American Style)
         translated_en = translate_transcript(refined_zh)
-        full_translated_en += translated_en + "\n\n"
+        print('Translated segment as: ' + translated_en[:100] + '...)
+        with open(translation_en_tmp, 'a', encoding='utf-8') as f:
+            f.write(translated_en + "\n\n")
 
-    # 2. Save final transcripts
-    transcript_zh_path = os.path.join(sermon_dir, 'transcript_zh.txt')
-    with open(transcript_zh_path, 'w', encoding='utf-8') as f:
-        f.write(full_refined_zh.strip() + "\n")
-    print(f"✅ Saved refined ZH transcript: {transcript_zh_path}")
+    # 2. Finalize files: Move .tmp to final path
+    if os.path.exists(transcript_zh_tmp):
+        os.replace(transcript_zh_tmp, transcript_zh_path)
+        print(f"✅ Saved refined ZH transcript: {transcript_zh_path}")
 
-    translation_en_path = os.path.join(sermon_dir, 'translation_en.txt')
-    with open(translation_en_path, 'w', encoding='utf-8') as f:
-        f.write(full_translated_en.strip() + "\n")
-    print(f"✅ Saved translation: {translation_en_path}")
-    
+    if os.path.exists(translation_en_tmp):
+        os.replace(translation_en_tmp, translation_en_path)
+        print(f"✅ Saved translation: {translation_en_path}")
+
     print(f"✅ Audio processing complete: {metadata['title']}")
 
 
@@ -105,7 +117,7 @@ def translate_transcript(text: str) -> str:
     print(f"🌐 Translating to English (Native American style)...")
     prompt = f"""
     Translate the following Chinese sermon transcript to English.
-    STRICT REQUIREMENT: Use native American English terms, idioms, and phrases. 
+    STRICT REQUIREMENT: Use native American English terms, idioms, and phrases.
     It should sound like a native speaker born and raised in the US.
     Ensure biblical and theological accuracy and clear flow.
     Content:
