@@ -7,7 +7,7 @@ from glob import glob
 from pathlib import Path
 
 from src.constants import OUTPUT_ROOT
-from src.common import load_translation_cache
+from src.common import load_translation_cache, pad_numbers
 from src.process_metadata import get_sermon_dir, save_metadata, save_translation_cache
 
 
@@ -18,6 +18,8 @@ def cleanup_title(title: str, sequence: str) -> str:
     """
     if not title or not sequence:
         return title
+    
+    title = pad_numbers(title)
 
     padded_seq = str(sequence).zfill(3)
     int_seq = str(int(sequence))
