@@ -15,7 +15,7 @@ A high-performance Python pipeline for processing sermon audio/video files with 
 ## Tech Stack
 
 - **Python 3.9+**: Core pipeline and orchestration.
-- **faster-whisper**: Optimized local transcription.
+- **faster-whisper**: Optimized local transcription (large-v3 tuned for bilingual accuracy).
 - **Ollama**: Local LLM inference for metadata extraction and refinement.
 - **Coqui XTTS v2**: Professional voice cloning and TTS.
 - **python-slugify**: URL-safe English path generation.
