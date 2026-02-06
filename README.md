@@ -41,20 +41,32 @@ cd sermon-voices
 make setup
 ```
 
-### Usage
+#### Usage
 
 ```bash
 # 1. Place sermon files in blobs/ (any structure)
 mkdir -p blobs/my_preacher
 cp sermon.mp3 blobs/my_preacher/
 
-# 2. Extract metadata and reorganize (dry run by default)
-make extract-metadata
-make reorganize-files
-
-# 3. Process the full pipeline
-make process
+# 2. Run the main pipeline (Metadata extraction + Audio processing)
+python src/main.py
 ```
+
+## Workflow
+
+The processing pipeline is split into two main phases, orchestrated by `src/main.py`:
+
+1.  **Metadata Extraction** ([extract_metadata.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/extract_metadata.py)):
+    -   Scans `blobs/` for new MP3 files.
+    -   Uses LLMs to extract preacher, series, title, scripture, and date from file paths.
+    -   Translates metadata to English and creates a slugified directory structure in `output/`.
+2.  **Audio Processing** ([process_audio.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/process_audio.py)):
+    -   Chunking the audio for efficient processing.
+    -   Transcribing (Whisper) and Translating (Ollama) each chunk.
+    -   Combining and Refining the final English transcript.
+    -   Converting to Markdown/PDF and generating TTS audio with cloned voices.
+
+Running `python src/main.py` will execute both phases sequentially. The pipeline is idempotent and will skip already processed files.
 
 ## Project Structure
 
