@@ -6,6 +6,7 @@ from glob import glob
 from typing import Dict, Any, List
 import ollama
 from slugify import slugify
+from pydub import AudioSegment
 
 # Configuration
 DEFAULT_MODEL = 'qwen3:8b'
@@ -51,7 +52,7 @@ def main():
 def process_metadata(path: str):
     """ Extracts metadata and sets up the directory structure. """
     print(f"🔍 Extracting: {path}")
-    
+
     # 1. Extraction
     metadata = extract_metadata(path)
     if not metadata:
@@ -59,7 +60,7 @@ def process_metadata(path: str):
 
     # 1.1 Translation
     metadata = translate_metadata(metadata)
-    
+
     # 1.2 Initial Status
     metadata['status'] = ["ok:metadata"]
 
@@ -71,7 +72,7 @@ def process_metadata(path: str):
     original_path = os.path.join(sermon_dir, 'original.mp3')
     if not os.path.exists(original_path):
         shutil.copy2(path, original_path)
-    
+
     # 4. Save Metadata
     save_metadata(sermon_dir, metadata)
 
@@ -85,70 +86,119 @@ def process_audio(metadata_path: str):
     """ Processes audio tasks based on the current status in metadata.json. """
     with open(metadata_path, 'r', encoding='utf-8') as f:
         metadata = json.load(f)
-    
+
     sermon_dir = os.path.dirname(metadata_path)
-    original_path = os.path.join(sermon_dir, 'original.mp3')
+    audio_path = os.path.join(sermon_dir, 'original.mp3')
+    chunks_dir = os.path.join(sermon_dir, 'chunks')
     status = metadata.get('status', [])
 
-    if not os.path.exists(original_path):
+    if not os.path.exists(audio_path):
         print(f"⚠️ Original audio not found for {metadata.get('title')}")
         return
 
     if "ok:metadata" not in status:
-        return # Should not happen if harvester did its job
-
-    # Skip if fully completed
-    if "ok:tts" in status:
         return
 
-    print(f"\n⚙️ Processing Audio: {metadata.get('title')} ({metadata_path})")
+    # Skip if fully completed
+    if "ok:refined_en" in status:
+        return
 
-    # 5. Transcription
-    if "ok:transcript" not in status:
-        transcript_path = transcript_audio(original_path)
-        if transcript_path:
-            status.append("ok:transcript")
+    print(f"\n⚙️ Processing Audio (Chunked): {metadata.get('title')} ({metadata_path})")
+
+    # 1. Chunking
+    if "ok:chunks" not in status:
+        split_audio_into_chunks(audio_path)
+        status.append("ok:chunks")
+        save_metadata(sermon_dir, metadata)
+
+    # 2. Chunk Transcription
+    chunk_files = sorted(glob(os.path.join(chunks_dir, '*.mp3')))
+    if "ok:chunk_transcripts" not in status:
+        print(f"🎙️ Transcribing {len(chunk_files)} chunks...")
+        for cf in chunk_files:
+            transcript_audio(cf)
+        status.append("ok:chunk_transcripts")
+        save_metadata(sermon_dir, metadata)
+
+    # 3. Chunk Translation
+    chunk_transcripts = sorted(glob(os.path.join(chunks_dir, '0*.txt'))) # Matches 001.txt, etc.
+    if "ok:chunk_translations" not in status:
+        print(f"🌐 Translating {len(chunk_transcripts)} chunk transcripts...")
+        for ct in chunk_transcripts:
+            translate_transcript(ct)
+        status.append("ok:chunk_translations")
+        save_metadata(sermon_dir, metadata)
+
+    # 4. Combine Translations
+    combined_en_path = os.path.join(sermon_dir, 'transcript_en_combined.txt')
+    if "ok:combined_en" not in status:
+        print(f"🔗 Combining translated chunks...")
+        chunk_translations = sorted(glob(os.path.join(chunks_dir, '0*_en.txt')))
+        combined_text = ""
+        for ct in chunk_translations:
+            with open(ct, 'r', encoding='utf-8') as f:
+                combined_text += f.read() + "\n\n"
+        with open(combined_en_path, 'w', encoding='utf-8') as f:
+            f.write(combined_text)
+        status.append("ok:combined_en")
+        save_metadata(sermon_dir, metadata)
+
+    # 5. Refine Combined Translation
+    refined_en_path = os.path.join(sermon_dir, 'transcript_en_refined.txt')
+    if "ok:refined_en" not in status:
+        print(f"✍️ Refining final translation...")
+        refined_content = refine_transcript(combined_en_path)
+        if refined_content and refined_content != combined_en_path:
+            status.append("ok:refined_en")
             save_metadata(sermon_dir, metadata)
 
-    # 6. Refinement
-    if "ok:refined" not in status and "ok:transcript" in status:
-        transcript_path = os.path.join(sermon_dir, 'transcript_zh.txt')
-        refined_path = refine_transcript(transcript_path)
-        if refined_path and refined_path != transcript_path:
-            status.append("ok:refined")
-            save_metadata(sermon_dir, metadata)
-
-    # 7. Document Conversion
-    if "ok:markdown" not in status and "ok:refined" in status:
-        refined_path = os.path.join(sermon_dir, 'transcript_zh_refined.txt')
-        markdown_path = convert_to_markdown(refined_path)
+    # 6. Document Conversion (Markdown/PDF)
+    if "ok:markdown" not in status and "ok:refined_en" in status:
+        refined_en_path = os.path.join(sermon_dir, 'transcript_en_refined.txt')
+        markdown_path = convert_to_markdown(refined_en_path)
         if markdown_path:
             status.append("ok:markdown")
             save_metadata(sermon_dir, metadata)
 
     if "ok:pdf" not in status and "ok:markdown" in status:
-        markdown_path = os.path.join(sermon_dir, 'transcript_zh_refined.md')
+        markdown_path = os.path.join(sermon_dir, 'transcript_en_refined.md')
         latex_path = convert_to_latex(markdown_path)
         convert_to_pdf(latex_path)
         status.append("ok:pdf")
         save_metadata(sermon_dir, metadata)
 
-    # 8. Translation
-    if "ok:translation" not in status and "ok:transcript" in status:
-        transcript_path = os.path.join(sermon_dir, 'transcript_zh.txt')
-        translated_path = translate_transcript(transcript_path)
-        if translated_path and translated_path != transcript_path:
-            status.append("ok:translation")
-            save_metadata(sermon_dir, metadata)
-
-    # 9. TTS
-    if "ok:tts" not in status and "ok:translation" in status:
-        translated_path = os.path.join(sermon_dir, 'transcript_zh_en.txt')
-        audio_en_path = text_to_speech(translated_path, original_path)
+    # 7. TTS
+    if "ok:tts" not in status and "ok:refined_en" in status:
+        refined_en_path = os.path.join(sermon_dir, 'transcript_en_refined.txt')
+        audio_en_path = text_to_speech(refined_en_path, audio_path)
         if audio_en_path:
             status.append("ok:tts")
             save_metadata(sermon_dir, metadata)
             print(f"✅ Audio processing complete: {metadata['title']}")
+
+
+def split_audio_into_chunks(audio_path: str, chunk_length_ms: int = 60000) -> List[str]:
+    """ Splits an audio file into chunks of specified length. """
+    sermon_dir = os.path.dirname(audio_path)
+    chunks_dir = os.path.join(sermon_dir, 'chunks')
+    os.makedirs(chunks_dir, exist_ok=True)
+
+    # Check if chunks already exist
+    existing_chunks = sorted(glob(os.path.join(chunks_dir, '*.mp3')))
+    if existing_chunks:
+        print(f"⏩ Chunks already exist in {chunks_dir}")
+        return existing_chunks
+
+    print(f"🔪 Splitting audio into chunks: {audio_path}")
+    audio = AudioSegment.from_file(audio_path)
+    chunks = []
+    for i, start_ms in enumerate(range(0, len(audio), chunk_length_ms)):
+        chunk = audio[start_ms:start_ms + chunk_length_ms]
+        chunk_name = f"{str(i+1).zfill(3)}.mp3"
+        chunk_path = os.path.join(chunks_dir, chunk_name)
+        chunk.export(chunk_path, format="mp3")
+        chunks.append(chunk_path)
+    return chunks
 
 
 def extract_preacher(path: str, model: str = None) -> str:
@@ -325,7 +375,10 @@ def save_metadata(sermon_dir: str, metadata: dict):
 
 def transcript_audio(audio_path: str) -> str:
     from faster_whisper import WhisperModel
-    output_path = audio_path.replace('original.mp3', 'transcript_zh.txt')
+    if audio_path.endswith('original.mp3'):
+        output_path = audio_path.replace('original.mp3', 'transcript_zh.txt')
+    else:
+        output_path = audio_path.rsplit('.', 1)[0] + '.txt'
     if os.path.exists(output_path):
         return output_path
     print(f"🎙️ Transcribing: {audio_path}")
@@ -340,15 +393,36 @@ def transcript_audio(audio_path: str) -> str:
 
 
 def refine_transcript(path: str) -> str:
-    output_path = path.replace('.txt', '_refined.txt')
+    output_path = path.replace('_combined.txt', '_refined.txt')
+    if '_combined.txt' not in path:
+        output_path = path.replace('.txt', '_refined.txt')
+
     if os.path.exists(output_path):
         return output_path
     print(f"✍️ Refining transcript: {path}")
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-    prompt = f"Refine this sermon transcript for punctuation, speaker identification, and pinyin errors. Keep it verbatim but clean it up for reading:\n\n{content[:2000]}" # Limit context
+
+    # Use different prompt for translation refinement vs transcription refinement
+    if '_en' in path or 'en' in path:
+        prompt = f"""
+        Refine this English sermon translation for biblical accuracy, theological depth, and natural native flow.
+        Ensure it reads like a professional sermon transcript.
+        Keep the meaning faithful to the original but improve the English style.
+        Content:
+        {content[:8000]}
+        """
+    else:
+        prompt = f"Refine this sermon transcript for punctuation, speaker identification, and pinyin errors. Keep it verbatim but clean it up for reading:\n\n{content[:2000]}"
+
     content_refined = ask_llm(prompt, num_ctx=8192)
     if content_refined:
+        # If the LLM returns a JSON object with 'refinement' or similar, handle it.
+        # But ask_llm is configured to return dict.
+        # I should check if it's a string or dict.
+        if isinstance(content_refined, dict):
+            content_refined = content_refined.get('refined_text') or content_refined.get('translation') or str(content_refined)
+
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(content_refined)
         return output_path
@@ -409,7 +483,10 @@ def convert_to_pdf(path: str) -> str:
 
 
 def translate_transcript(path: str) -> str:
-    output_path = path.replace('_zh.txt', '_en.txt')
+    if path.endswith('_zh.txt'):
+        output_path = path.replace('_zh.txt', '_en.txt')
+    else:
+        output_path = path.rsplit('.', 1)[0] + '_en.txt'
     if os.path.exists(output_path):
         return output_path
     print(f"🌐 Translating (Ollama): {path}")
@@ -448,7 +525,7 @@ def text_to_speech(text_path: str, audio_path: str) -> str:
         # Load model with MPS (Metal) support if available
         device = "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"🖥️ Using device: {device}")
-        
+
         model_name = "tts_models/multilingual/multi-dataset/xtts_v2"
         tts = TTS(model_name).to(device)
 
