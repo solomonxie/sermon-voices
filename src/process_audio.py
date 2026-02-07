@@ -38,7 +38,7 @@ def main() -> None:
             
         for chunk_path in chunk_paths:
             try:
-                read_audio(chunk_path, zh_tmp, en_tmp)
+                process_chunk(chunk_path, zh_tmp, en_tmp)
             except Exception as e:
                 print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
             # break # debug---------- (optional: user had one break in draft)
@@ -96,7 +96,7 @@ def split_audio(metadata_path: str) -> list[str]:
     return sorted(chunk_paths)
 
 
-def read_audio(audio_path: str, zh_tmp_path: str, en_tmp_path: str) -> None:
+def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str) -> None:
     """
     Processes a single audio chunk: Transcribe -> Refine -> Translate -> Append.
     """
@@ -105,6 +105,9 @@ def read_audio(audio_path: str, zh_tmp_path: str, en_tmp_path: str) -> None:
     # 1. Transcribe
     text = transcribe_audio(audio_path)
     if not text.strip(): return
+
+    # 1.5 Enhance Punctuation
+    text = enhance_punctuation(text)
 
     # 2. Refine (ZH)
     refined_zh = refine_text(text)
@@ -128,19 +131,46 @@ def get_asr_model():
     import torch
     from funasr import AutoModel
     
-    print(f"🚀 Loading Paraformer-large...")
+    print(f"🚀 Loading Paraformer-large (ASR)...")
     funasr_root = os.path.expanduser("~/llm_models/funasr")
     os.environ["MODELSCOPE_CACHE"] = funasr_root
     
     start = time()
     ASR_MODEL = AutoModel(
         model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        punc_model="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+        # punc_model="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
         device="cuda" if torch.cuda.is_available() else "cpu",
         disable_update=True
     )
-    print(f"\tModel loaded in {time()-start:,.0f}s")
+    print(f"\tASR Model loaded in {time()-start:,.0f}s")
     return ASR_MODEL
+
+
+PUNC_MODEL = None
+
+def get_punc_model():
+    """
+    Lazy loader for ct-punc model.
+    """
+    global PUNC_MODEL
+    if PUNC_MODEL is not None:
+        return PUNC_MODEL
+
+    import torch
+    from funasr import AutoModel
+    
+    print(f"🚀 Loading ct-punc (Punctuation)...")
+    funasr_root = os.path.expanduser("~/llm_models/funasr")
+    os.environ["MODELSCOPE_CACHE"] = funasr_root
+    
+    start = time()
+    PUNC_MODEL = AutoModel(
+        model="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        disable_update=True
+    )
+    print(f"\tPunctuation Model loaded in {time()-start:,.0f}s")
+    return PUNC_MODEL
 
 
 def transcribe_audio(audio_path: str) -> str:
@@ -153,15 +183,32 @@ def transcribe_audio(audio_path: str) -> str:
     return res[0].get('text', '').strip()
 
 
+def enhance_punctuation(text: str) -> str:
+    """
+    Enhances punctuation of a text segment using ct-punc.
+    """
+    print(f"💉 Enhancing punctuation...")
+    model = get_punc_model()
+    res = model.generate(input=text)
+    if not res: return text
+    return res[0].get('text', text).strip()
+
+
 def refine_text(text: str) -> str:
     """
     Refines Chinese transcript for biblical accuracy and punctuation.
     """
     print(f"✍️ Refining ZH text segment...")
     prompt = f"""
-    Refine this Chinese sermon transcript for punctuation, speaker identification, and character errors.
-    Keep it verbatim but clean it up for reading.
-    Most importantly: it must use biblical terms where applicable.
+    Refine this Chinese sermon transcript based on the following rules:
+    1. BIBLICAL CONTEXT: Ensure all terms, names, and theological concepts follow Chinese Union Version (CUV) or standard biblical terminology. 
+    2. BIBLICAL NAMES: Prioritize biblical names over phonetic or common Chinese names (e.g., '彼得' instead of phonetically similar names).
+    3. PUNCTUATION & FLOW: Improve punctuation for readability. Separate text into logical paragraphs.
+    4. CONTEXTUAL SENSE: Each sentence MUST make sense in the surrounding context. Correct grammatical errors.
+    5. CLEANUP: Remove nonsensical filler words, duplicate characters, or artifacts from transcription.
+    
+    Keep the content faithful to the original speech but make it professional and readable.
+
     Return ONLY the refined text in the 'refined_text' key of a JSON object.
 
     Content:
@@ -173,13 +220,16 @@ def refine_text(text: str) -> str:
 
 def translate_text(text: str) -> str:
     """
-    Translates ZH text to EN (Native American Style).
+    Translates ZH text to EN (Biblical and Professional style).
     """
     print(f"🌐 Translating to English...")
     prompt = f"""
-    Translate the following Chinese sermon transcript to English.
-    STRICT REQUIREMENT: Use native American English terms, idioms, and phrases.
-    Ensure theological accuracy and clear flow.
+    Translate the following Chinese sermon transcript to English based on these rules:
+    1. BIBLICAL ACCURACY: Strictly follow biblical context. Use established English biblical names and terms (e.g., 'Zion' instead of 'Xi'an').
+    2. NATIVE FLUENCY: Use professional, natural English suitable for a sermon.
+    3. GRAMMATICAL CORRECTNESS: Ensure every phrase and sentence is grammatically correct and makes common sense.
+    4. PRESERVE MEANING: Maintain the speaker's original intent and theological depth.
+
     Return ONLY the translation in the 'translation' key of a JSON object.
 
     Content:
