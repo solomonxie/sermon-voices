@@ -66,6 +66,22 @@ def pad_numbers(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def get_custom_instructions(preacher_dir: str, instruction_file: str) -> str:
+    """
+    Reads custom instructions from a specific .md file in the preacher's directory if it exists.
+    """
+    instruction_path = os.path.join(preacher_dir, instruction_file)
+    if os.path.exists(instruction_path):
+        try:
+            with open(instruction_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    return f"\n\nCUSTOM INSTRUCTIONS:\n{content}"
+        except Exception as e:
+            print(f"⚠️ Error reading custom instructions from {instruction_path}: {e}")
+    return ""
+
+
 def safe_remove(path: str):
     """ Safely removes a file if it exists. """
     if os.path.exists(path):
