@@ -15,7 +15,7 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
             format='json',
             options={
                 "temperature": temperature,
-                "show_think": True,
+                "show_think": False,
                 "num_ctx": num_ctx,
                 # "num_thread": 4,
                 # Ollama on M1/Metal handles GPU acceleration automatically.
@@ -28,12 +28,12 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
     content = response['response']
     # Remove <think>...</think> tags
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+    
     try:
-        data = json.loads(content)
+        return json.loads(content)
     except Exception as e:
-        print(f'Failed to load answer to json: {content}\n{e}')
+        print(f"❌ Failed to parse LLM response as JSON: {e}")
         raise e
-    return data
 
 
 def load_translation_cache() -> dict[str, str]:
