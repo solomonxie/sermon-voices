@@ -190,7 +190,6 @@ def enhance_punctuation(text: str) -> str:
     print(f"💉 Enhancing punctuation...")
     model = get_punc_model()
     res = model.generate(input=text)
-    if not res: return text
     return res[0].get('text', text).strip()
 
 
@@ -202,20 +201,25 @@ def refine_text(text: str) -> str:
     prompt = f"""
     Refine this Chinese sermon transcript based on the following rules:
     1. BIBLICAL CONTEXT: Ensure all terms, names, and theological concepts follow Chinese Union Version (CUV) or standard biblical terminology. 
-    2. BIBLICAL NAMES: Prioritize biblical names over phonetic or common Chinese names (e.g., '彼得' instead of phonetically similar names).
+    2. BIBLICAL NAMES: Prioritize biblical names over phonetic or common Chinese names (e.g., '彼得' instead of phonetically similar names, or '锡安' instead of '西安').
     3. PUNCTUATION & FLOW: Improve punctuation for readability. Separate text into logical paragraphs.
     4. CONTEXTUAL SENSE: Each sentence MUST make sense in the surrounding context. Correct grammatical errors.
     5. CLEANUP: Remove nonsensical filler words, duplicate characters, or artifacts from transcription.
     
     Keep the content faithful to the original speech but make it professional and readable.
 
-    Return ONLY the refined text in the 'refined_text' key of a JSON object.
+    Output MUST be a valid JSON object with a single key 'refined_text' containing the refined content.
+    Do NOT include any markdown formatting, preamble, or footer.
 
     Content:
     {text}
     """
-    data = ask_llm(prompt, num_ctx=8192)
-    return data.get('refined_text', str(data))
+    try:
+        data = ask_llm(prompt, num_ctx=8192)
+        return data.get('refined_text', text)
+    except Exception as e:
+        print(f"⚠️ Refinement failed, using original text: {e}")
+        return text
 
 
 def translate_text(text: str) -> str:
@@ -230,13 +234,18 @@ def translate_text(text: str) -> str:
     3. GRAMMATICAL CORRECTNESS: Ensure every phrase and sentence is grammatically correct and makes common sense.
     4. PRESERVE MEANING: Maintain the speaker's original intent and theological depth.
 
-    Return ONLY the translation in the 'translation' key of a JSON object.
+    Output MUST be a valid JSON object with a single key 'translation' containing the translated content.
+    Do NOT include any markdown formatting, preamble, or footer.
 
     Content:
     {text}
     """
-    data = ask_llm(prompt, num_ctx=8192)
-    return data.get('translation', str(data))
+    try:
+        data = ask_llm(prompt, num_ctx=8192)
+        return data.get('translation', text)
+    except Exception as e:
+        print(f"⚠️ Translation failed, using original text: {e}")
+        return text
 
 
 if __name__ == '__main__':
