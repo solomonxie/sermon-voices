@@ -80,10 +80,14 @@ def get_whisper_model():
     global WHISPER_MODEL
     if WHISPER_MODEL is not None:
         return WHISPER_MODEL
-    model_size = "large-v3"
+    # NOTE: large-v2 is used instead of large-v3 because large-v3 has a known issue
+    # where it hallucinated internet-style "Subscribe/Donate" prompts in Chinese audio.
+    # e.g. "请不吝点赞 转发支持明镜与点点栏目 请不吝点赞 转发支持明镜与点点栏目"
+    # ref: https://github.com/SYSTRAN/faster-whisper/issues/587
+    model_size = "large-v2"
     download_root = os.path.expanduser("~/llm_models/whisper")
     # Check if the model directory exists within the download root
-    # faster-whisper uses a specific naming convention: models--Systran--faster-whisper-large-v3
+    # faster-whisper uses a specific naming convention: models--Systran--faster-whisper-large-v2
     model_dir = os.path.join(download_root, f"models--Systran--faster-whisper-{model_size}")
     if not os.path.exists(model_dir):
         print(f"📥 Model '{model_size}' not found in {download_root}. This might take a while to download (approx 3GB)...")
@@ -112,15 +116,31 @@ def transcript_audio(audio_path: str):
         initial_prompt=initial_prompt,
         vad_filter=True,
         vad_parameters=dict(
-            min_silence_duration_ms=1000,   # increased to 1s to be safer
-            speech_pad_ms=400              # more padding helps avoid cutting off starts/ends
+            min_silence_duration_ms=1000,
+            speech_pad_ms=400
         ),
-        # This prevents the model from "looping" on common internet phrases
         repetition_penalty=1.2,
         no_speech_threshold=0.6
     )
+
+    current_chunk = []
+    chunk_start = None
+    target_duration = 60  # seconds
+
     for segment in segments:
-        yield segment.text + " "
+        if chunk_start is None:
+            chunk_start = segment.start
+
+        current_chunk.append(segment.text.strip())
+
+        # If the segment pushes us past the target duration, yield the chunk
+        if segment.end - chunk_start >= target_duration:
+            yield " ".join(current_chunk) + " "
+            current_chunk = []
+            chunk_start = None
+
+    if current_chunk:
+        yield " ".join(current_chunk) + " "
 
 
 def refine_transcript(text: str) -> str:
