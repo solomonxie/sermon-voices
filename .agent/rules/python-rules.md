@@ -21,6 +21,8 @@ Strict adherence to these rules ensures a robust and maintainable codebase for t
 >   - Use built-in types (e.g., `list[str]`, `dict[str, int]`) instead of `typing` imports where possible (Python 3.12+).
 > - **Docstrings**: Provide Google-style docstrings for complex functions and classes.
 > - **Naming**: Follow PEP 8 (snake_case for variables/functions, PascalCase for classes).
+> - **Order**: Order functions/classes in an order of reading, e.g., main() at top, then the definition function called by main(), then the other functions called by above function...;
+> - **Import**: Keep the import oder as: builtin lib at top in a length ascending order (import os is the shortet, so at top), then leave a blank line, keep project module imports, then a blank line, keep 3rd party lib imports. Then a blank line, global variables definition; Then it's the main() or core function of the module.
 
 ### 🛠️ Conflict Prevention
 > [!CAUTION]

@@ -64,3 +64,9 @@ def pad_numbers(text: str) -> str:
     text = re.sub(r'(\d+)([^\s\d])', r'\1 \2', text)
     # Collapse multiple spaces
     return re.sub(r'\s+', ' ', text).strip()
+
+
+def safe_remove(path: str):
+    """ Safely removes a file if it exists. """
+    if os.path.exists(path):
+        os.remove(path)
