@@ -29,10 +29,16 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
     # Remove <think>...</think> tags
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
     
+    # Robust JSON extraction: try to find the first '{' and last '}'
+    match = re.search(r'\{.*\}', content, re.DOTALL)
+    if match:
+        content = match.group(0)
+    
     try:
         return json.loads(content)
     except Exception as e:
         print(f"❌ Failed to parse LLM response as JSON: {e}")
+        print(f"--- Raw Content ---\n{content}\n-----------------")
         raise e
 
 

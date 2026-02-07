@@ -12,10 +12,13 @@ ASR_MODEL = None
 def main() -> None:
     print(f"\n--- Phase 2: Audio Transcription, Refinement & Translation ---")
     metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
+    # debug---------- (optional: user had one break in draft)
+    metadata_files = [
+        'output/hua-xian/acts/001_do-not-leave-jerusalem/metadata.json',
+        'output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/metadata.json',
+    ]
     
     for metadata_path in sorted(metadata_files):
-        if 'stephen-tong' not in metadata_path:
-            continue
         sermon_dir = os.path.dirname(metadata_path)
         final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
         
@@ -43,11 +46,13 @@ def main() -> None:
         transcript_instr = get_custom_instructions(preacher_dir, "transcript_instruction.md")
         translation_instr = get_custom_instructions(preacher_dir, "translation_instruction.md")
 
+        prev_context = ""
         for chunk_path in chunk_paths:
             try:
-                process_chunk(chunk_path, zh_tmp, en_tmp, transcript_instr, translation_instr)
+                prev_context = process_chunk(chunk_path, zh_tmp, en_tmp, transcript_instr, translation_instr, prev_context=prev_context)
             except Exception as e:
                 print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
+                prev_context = ""
             # break # debug---------- (optional: user had one break in draft)
             
         # 3. Finalize: move tmp to final
@@ -66,7 +71,7 @@ def main() -> None:
 
 def split_audio(metadata_path: str) -> list[str]:
     """
-    Splits original.mp3 into 1-minute chunks with 10s overlap.
+    Splits original.mp3 into 1-minute chunks with no overlap.
     Saves to a 'chunks/' subfolder.
     """
     from pydub import AudioSegment
@@ -83,11 +88,11 @@ def split_audio(metadata_path: str) -> list[str]:
     
     total_ms = len(audio)
     chunk_ms = 60 * 1000  # 1 minute
-    overlap_ms = 10 * 1000 # 10 seconds
+    overlap_ms = 0 # No overlap to prevent repetitions
     
     chunk_paths = []
-    # Step through with (chunk_ms - overlap_ms) to maintain overlap
-    for i, start_ms in enumerate(range(0, total_ms, chunk_ms - overlap_ms)):
+    # Step through with precisely chunk_ms intervals
+    for i, start_ms in enumerate(range(0, total_ms, chunk_ms)):
         end_ms = min(start_ms + chunk_ms, total_ms)
         chunk_name = f"chunk_{i:03d}.mp3"
         cp = os.path.join(chunks_dir, chunk_name)
@@ -103,9 +108,10 @@ def split_audio(metadata_path: str) -> list[str]:
     return sorted(chunk_paths)
 
 
-def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str, transcript_instr: str = "", translation_instr: str = "") -> None:
+def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str, transcript_instr: str = "", translation_instr: str = "", prev_context: str = "") -> str:
     """
     Processes a single audio chunk: Transcribe -> Refine -> Translate -> Append.
+    Returns the refined ZH text to be used as context for the next chunk.
     """
     print(f"🎙️ Reading chunk: {os.path.basename(audio_path)}")
     
@@ -117,7 +123,7 @@ def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str, transcrip
     text = enhance_punctuation(text)
 
     # 2. Refine (ZH)
-    refined_zh = refine_text(text, custom_instructions=transcript_instr)
+    refined_zh = refine_text(text, custom_instructions=transcript_instr, prev_context=prev_context)
     with open(zh_tmp_path, 'a', encoding='utf-8') as f:
         f.write(refined_zh + "\n\n")
 
@@ -125,6 +131,8 @@ def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str, transcrip
     translated_en = translate_text(refined_zh, custom_instructions=translation_instr)
     with open(en_tmp_path, 'a', encoding='utf-8') as f:
         f.write(translated_en + "\n\n")
+    
+    return refined_zh
 
 
 def get_asr_model():
@@ -200,26 +208,33 @@ def enhance_punctuation(text: str) -> str:
     return res[0].get('text', text).strip()
 
 
-def refine_text(text: str, custom_instructions: str = "") -> str:
+def refine_text(text: str, custom_instructions: str = "", prev_context: str = "") -> str:
     """
     Refines Chinese transcript for biblical accuracy and punctuation.
     """
     print(f"✍️ Refining ZH text segment...")
+    
+    context_prefix = ""
+    if prev_context.strip():
+        # Only take the last bit of the previous context to avoid bloating the prompt
+        context_tail = prev_context[-300:] if len(prev_context) > 300 else prev_context
+        context_prefix = f"\nPREVIOUS CONTEXT (for flow and transition only):\n...{context_tail}\n--- END PREVIOUS CONTEXT ---\n"
+
     prompt = f"""
     Refine this Chinese sermon transcript based on the following rules:
     1. BIBLICAL CONTEXT: Ensure all terms, names, and theological concepts follow Chinese Union Version (CUV) or standard biblical terminology. 
     2. BIBLICAL NAMES: Prioritize biblical names over phonetic or common Chinese names (e.g., '彼得' instead of phonetically similar names, or '锡安' instead of '西安').
     3. PUNCTUATION & FLOW: Improve punctuation for readability. Separate text into logical paragraphs.
-    4. CONTEXTUAL SENSE: Each sentence MUST make sense in the surrounding context. Correct grammatical errors.
-    5. Rephrase sentences to make them clear and natural.
-    6. CLEANUP: Remove nonsensical filler words, duplicate characters, or artifacts from transcription.
-    7. Remove repeated words or phrases that are meaningfully identical (common in oral speaking).
-    Keep the content faithful to the original speech but make it professional and readable.
+    4. CONTEXTUAL SENSE: Each sentence MUST make sense in the surrounding context. Correct grammatical errors. Rephrase sentences to make them clear, natural, and professional.
+    5. REDUNDANCY REMOVAL: Aggressively remove oral repetitions, filler words, and meaningfully identical phrases. Consolidate repeated points into a single, cohesive statement.
+    6. TRANSITIONS: Use the provided 'PREVIOUS CONTEXT' to ensure the current chunk flows naturally from the last sentence of the previous segment. Do NOT repeat content already present in the previous context.
+    
     Output MUST be a valid JSON object with a single key 'refined_text' containing the refined content.
     Do NOT include any markdown formatting, preamble, or footer.
     {custom_instructions}
+    {context_prefix}
 
-    Content:
+    Content to Refine:
     {text}
     """
     try:
