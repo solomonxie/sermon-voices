@@ -16,7 +16,6 @@ Welcome to the **Sermon Voices** project. Follow these core standards to maintai
 ### 🛠️ Development Standards
 > [!TIP]
 > - **Makefile**: All primary commands (setup, processing, testing) **must** be reflected in the [Makefile](file:///Users/solomonxie/workspace/personal/sermon-voices/Makefile).
-> - **Test-Driven**: Prioritize a TDD approach whenever feasible.
 > - **Dependencies**: Update `requirements.txt` and `.gitignore` whenever adding new libraries.
 > - **Permissions**: **Do not** use `chmod`. Execute scripts via `bash` or `venv/bin/python`.
 > - **Deletion**: Try not to `rm` delete thigns, but prioritize `mv xxx /tmp/xxx` instead.

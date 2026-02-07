@@ -4,7 +4,7 @@ import math
 import tempfile
 from glob import glob
 from time import time
-from src.common import ask_llm, safe_remove
+from src.common import ask_llm, safe_remove, get_custom_instructions
 from src.constants import OUTPUT_ROOT
 
 ASR_MODEL = None
@@ -14,6 +14,8 @@ def main() -> None:
     metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
     
     for metadata_path in sorted(metadata_files):
+        if 'stephen-tong' not in metadata_path:
+            continue
         sermon_dir = os.path.dirname(metadata_path)
         final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
         
@@ -36,9 +38,14 @@ def main() -> None:
         safe_remove(zh_tmp)
         safe_remove(en_tmp)
             
+        # Load custom instructions for this preacher
+        preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
+        transcript_instr = get_custom_instructions(preacher_dir, "transcript_instruction.md")
+        translation_instr = get_custom_instructions(preacher_dir, "translation_instruction.md")
+
         for chunk_path in chunk_paths:
             try:
-                process_chunk(chunk_path, zh_tmp, en_tmp)
+                process_chunk(chunk_path, zh_tmp, en_tmp, transcript_instr, translation_instr)
             except Exception as e:
                 print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
             # break # debug---------- (optional: user had one break in draft)
@@ -96,7 +103,7 @@ def split_audio(metadata_path: str) -> list[str]:
     return sorted(chunk_paths)
 
 
-def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str) -> None:
+def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str, transcript_instr: str = "", translation_instr: str = "") -> None:
     """
     Processes a single audio chunk: Transcribe -> Refine -> Translate -> Append.
     """
@@ -110,12 +117,12 @@ def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str) -> None:
     text = enhance_punctuation(text)
 
     # 2. Refine (ZH)
-    refined_zh = refine_text(text)
+    refined_zh = refine_text(text, custom_instructions=transcript_instr)
     with open(zh_tmp_path, 'a', encoding='utf-8') as f:
         f.write(refined_zh + "\n\n")
 
     # 3. Translate (EN)
-    translated_en = translate_text(refined_zh)
+    translated_en = translate_text(refined_zh, custom_instructions=translation_instr)
     with open(en_tmp_path, 'a', encoding='utf-8') as f:
         f.write(translated_en + "\n\n")
 
@@ -193,7 +200,7 @@ def enhance_punctuation(text: str) -> str:
     return res[0].get('text', text).strip()
 
 
-def refine_text(text: str) -> str:
+def refine_text(text: str, custom_instructions: str = "") -> str:
     """
     Refines Chinese transcript for biblical accuracy and punctuation.
     """
@@ -204,12 +211,13 @@ def refine_text(text: str) -> str:
     2. BIBLICAL NAMES: Prioritize biblical names over phonetic or common Chinese names (e.g., '彼得' instead of phonetically similar names, or '锡安' instead of '西安').
     3. PUNCTUATION & FLOW: Improve punctuation for readability. Separate text into logical paragraphs.
     4. CONTEXTUAL SENSE: Each sentence MUST make sense in the surrounding context. Correct grammatical errors.
-    5. CLEANUP: Remove nonsensical filler words, duplicate characters, or artifacts from transcription.
-    
+    5. Rephrase sentences to make them clear and natural.
+    6. CLEANUP: Remove nonsensical filler words, duplicate characters, or artifacts from transcription.
+    7. Remove repeated words or phrases that are meaningfully identical (common in oral speaking).
     Keep the content faithful to the original speech but make it professional and readable.
-
     Output MUST be a valid JSON object with a single key 'refined_text' containing the refined content.
     Do NOT include any markdown formatting, preamble, or footer.
+    {custom_instructions}
 
     Content:
     {text}
@@ -222,20 +230,21 @@ def refine_text(text: str) -> str:
         return text
 
 
-def translate_text(text: str) -> str:
+def translate_text(text: str, custom_instructions: str = "") -> str:
     """
     Translates ZH text to EN (Biblical and Professional style).
     """
     print(f"🌐 Translating to English...")
     prompt = f"""
     Translate the following Chinese sermon transcript to English based on these rules:
-    1. BIBLICAL ACCURACY: Strictly follow biblical context. Use established English biblical names and terms (e.g., 'Zion' instead of 'Xi'an').
-    2. NATIVE FLUENCY: Use professional, natural English suitable for a sermon.
-    3. GRAMMATICAL CORRECTNESS: Ensure every phrase and sentence is grammatically correct and makes common sense.
-    4. PRESERVE MEANING: Maintain the speaker's original intent and theological depth.
-
+    1. BIBLICAL ACCURACY: Strictly follow biblical context.
+    2. Use established English biblical names and terms (e.g., 'Zion' instead of 'Xi'an').
+    3. NATIVE FLUENCY: Use professional, natural English suitable for a sermon.
+    4. GRAMMATICAL CORRECTNESS: Ensure every phrase and sentence is grammatically correct and makes common sense.
+    5. PRESERVE MEANING: Maintain the speaker's original intent and theological depth.
     Output MUST be a valid JSON object with a single key 'translation' containing the translated content.
     Do NOT include any markdown formatting, preamble, or footer.
+    {custom_instructions}
 
     Content:
     {text}

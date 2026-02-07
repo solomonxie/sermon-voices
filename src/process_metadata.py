@@ -5,7 +5,7 @@ import re
 from glob import glob
 from slugify import slugify
 
-from src.common import ask_llm, load_translation_cache, pad_numbers
+from src.common import ask_llm, load_translation_cache, pad_numbers, get_custom_instructions
 from src.constants import OUTPUT_ROOT, BLOBS_ROOT, PROCESSED_LOG, TRANSLATION_MAP_PATH
 
 
@@ -40,12 +40,19 @@ def process_metadata(path: str) -> None:
     print(f"🔍 Extracting: {path}")
 
     # 1. Extraction
-    metadata = extract_metadata(path)
+    # Find preacher folder in blobs
+    rel_path = os.path.relpath(path, BLOBS_ROOT)
+    preacher_folder = rel_path.split(os.sep)[0]
+    preacher_dir = os.path.join(BLOBS_ROOT, preacher_folder)
+    
+    custom_instr = get_custom_instructions(preacher_dir, "metadata_instruction.md")
+
+    metadata = extract_metadata(path, custom_instructions=custom_instr)
     if not metadata:
         return
 
     # 1.1 Translation
-    metadata = translate_metadata(metadata)
+    metadata = translate_metadata(metadata, custom_instructions=custom_instr)
 
 
     # 2. Directory Setup
@@ -66,7 +73,7 @@ def process_metadata(path: str) -> None:
     print(f"✅ Metadata extracted: {metadata['title']}")
 
 
-def extract_preacher(path: str, model: str | None = None) -> str:
+def extract_preacher(path: str, model: str | None = None, custom_instructions: str = "") -> str:
     hints = pad_numbers('\n'.join(os.path.dirname(path).replace('blobs/', '').split('/')))
     prompt = f"""
     Find the most probable preacher's name from the given path.
@@ -76,6 +83,7 @@ def extract_preacher(path: str, model: str | None = None) -> str:
     Example output: {{"preacher": "唐崇荣"}}
     Hints:
     {hints}
+    {custom_instructions}
     """
     resp = ask_llm(prompt, model=model, num_ctx=1024)
     answer = resp.get('preacher') or "unknown_preacher"
@@ -83,7 +91,7 @@ def extract_preacher(path: str, model: str | None = None) -> str:
     return answer[-50:]
 
 
-def extract_series(path: str, model: str | None = None) -> str:
+def extract_series(path: str, model: str | None = None, custom_instructions: str = "") -> str:
     hints = pad_numbers('\n'.join(os.path.dirname(path).replace('blobs/', '').split('/')))
     prompt = f"""
     Find the most probable Bible book or sermon series name from the given hints.
@@ -93,6 +101,7 @@ def extract_series(path: str, model: str | None = None) -> str:
     Example output: {{"series": "约翰福音"}}
     Hints:
     {hints}
+    {custom_instructions}
     """
     resp = ask_llm(prompt, model=model, num_ctx=1024)
     answer = resp.get('series') or "series0"
@@ -100,7 +109,7 @@ def extract_series(path: str, model: str | None = None) -> str:
     return answer[-50:]
 
 
-def extract_title(path: str, model: str | None = None) -> str:
+def extract_title(path: str, model: str | None = None, custom_instructions: str = "") -> str:
     hints = pad_numbers(path)
     prompt = f"""
     Find the specific sermon title from the given hints.
@@ -110,6 +119,7 @@ def extract_title(path: str, model: str | None = None) -> str:
     Example output: {{"title": "烧荆棘的爆声"}}
     Hints:
     {path}
+    {custom_instructions}
     """
     resp = ask_llm(prompt, model=model, num_ctx=1024)
     answer = resp.get('title') or "untitled"
@@ -117,7 +127,7 @@ def extract_title(path: str, model: str | None = None) -> str:
     return answer[-50:]
 
 
-def extract_scripture(path: str, model: str | None = None) -> str:
+def extract_scripture(path: str, model: str | None = None, custom_instructions: str = "") -> str:
     hints = os.path.basename(path)
     prompt = f"""
     Find the specific Bible verses from the given hints.
@@ -130,6 +140,7 @@ def extract_scripture(path: str, model: str | None = None) -> str:
     {{"scripture": "Ecclesiastes ch7:v6"}}
     Hints:
     {hints}
+    {custom_instructions}
     """
     resp = ask_llm(prompt, model=model, num_ctx=1024)
     answer = resp.get('scripture') or 'ch0:v0'
@@ -137,7 +148,7 @@ def extract_scripture(path: str, model: str | None = None) -> str:
     return answer[-50:]
 
 
-def extract_sequence(path: str, model: str | None = None) -> str:
+def extract_sequence(path: str, model: str | None = None, custom_instructions: str = "") -> str:
     hints = pad_numbers(os.path.basename(path))
     prompt = f"""
     Find the sequence number or lecture number of the sermon from the given hints.
@@ -149,6 +160,7 @@ def extract_sequence(path: str, model: str | None = None) -> str:
     Example output: {{"sequence": "99"}}
     Hints:
     {hints}
+    {custom_instructions}
     """
     resp = ask_llm(prompt, model=model, num_ctx=1024)
     answer = resp.get('sequence') or ''
@@ -159,7 +171,7 @@ def extract_sequence(path: str, model: str | None = None) -> str:
     return "000"
 
 
-def extract_created_at(path: str, model: str | None = None) -> str:
+def extract_created_at(path: str, model: str | None = None, custom_instructions: str = "") -> str:
     """ Extracts date (YYYYMMDD) from path or filename using LLM. """
     hints = os.path.basename(path)
     prompt = f"""
@@ -170,6 +182,7 @@ def extract_created_at(path: str, model: str | None = None) -> str:
     Example output: {{"created_at": "20230621"}}
     Hints:
     {hints}
+    {custom_instructions}
     """
     resp = ask_llm(prompt, model=model, num_ctx=1024)
     answer = resp.get('created_at') or ''
@@ -180,16 +193,16 @@ def extract_created_at(path: str, model: str | None = None) -> str:
     return "00000000"
 
 
-def extract_metadata(path: str, model: str | None = None) -> dict[str, any]:
+def extract_metadata(path: str, model: str | None = None, custom_instructions: str = "") -> dict[str, any]:
     """ Uses modular extraction calls to gather metadata. """
     print(f"🔍 Extracting metadata for: {path}")
     return {
-        "preacher": extract_preacher(path, model=model),
-        "series": extract_series(path, model=model),
-        "sequence": extract_sequence(path, model=model),
-        "scripture": extract_scripture(path, model=model),
-        "title": extract_title(path, model=model),
-        "created_at": extract_created_at(path, model=model),
+        "preacher": extract_preacher(path, model=model, custom_instructions=custom_instructions),
+        "series": extract_series(path, model=model, custom_instructions=custom_instructions),
+        "sequence": extract_sequence(path, model=model, custom_instructions=custom_instructions),
+        "scripture": extract_scripture(path, model=model, custom_instructions=custom_instructions),
+        "title": extract_title(path, model=model, custom_instructions=custom_instructions),
+        "created_at": extract_created_at(path, model=model, custom_instructions=custom_instructions),
         "original_path": path
     }
 
@@ -205,7 +218,7 @@ def save_translation_cache(cache: dict[str, str]) -> None:
         print(f"⚠️ Error saving translation cache: {e}")
 
 
-def translate_metadata(metadata: dict[str, any]) -> dict[str, any]:
+def translate_metadata(metadata: dict[str, any], custom_instructions: str = "") -> dict[str, any]:
     """ Translates metadata fields to English using Christian context knowledge. """
     cache = load_translation_cache()
 
@@ -220,6 +233,7 @@ def translate_metadata(metadata: dict[str, any]) -> dict[str, any]:
     If uncertain, use "Unknown" as value.
     Content:
     {hints}
+    {custom_instructions}
     """
     resp = ask_llm(prompt, num_ctx=1024)
     print(f'\t Translated metadata: {resp}')
