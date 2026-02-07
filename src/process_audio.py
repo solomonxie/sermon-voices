@@ -1,190 +1,192 @@
 import os
 import json
+import math
+import tempfile
+from glob import glob
 from time import time
-from src.common import ask_llm
+from src.common import ask_llm, safe_remove
 from src.constants import OUTPUT_ROOT
 
-WHISPER_MODEL = None
-
+ASR_MODEL = None
 
 def main() -> None:
     print(f"\n--- Phase 2: Audio Transcription, Refinement & Translation ---")
-    from glob import glob
     metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
+    
     for metadata_path in sorted(metadata_files):
-        try:
-            process_audio(metadata_path)
-        except Exception as e:
-            print(f"❌ Error processing audio for {metadata_path}: {str(e)}")
-        # break  # debug----------
+        sermon_dir = os.path.dirname(metadata_path)
+        final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
+        
+        # Checkpoint: Skip if already processed
+        if os.path.exists(final_zh):
+            continue
+            
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        
+        print(f"\n⚙️ Processing: {metadata.get('title')} ({metadata_path})")
+        
+        # 1. Split audio into 1-min chunks with 10s overlap
+        chunk_paths = split_audio(metadata_path)
+        
+        # 2. Sequential processing
+        zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
+        en_tmp = os.path.join(sermon_dir, 'translation_en_tmp.txt')
+        
+        safe_remove(zh_tmp)
+        safe_remove(en_tmp)
+            
+        for chunk_path in chunk_paths:
+            try:
+                read_audio(chunk_path, zh_tmp, en_tmp)
+            except Exception as e:
+                print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
+            # break # debug---------- (optional: user had one break in draft)
+            
+        # 3. Finalize: move tmp to final
+        if os.path.exists(zh_tmp):
+            os.replace(zh_tmp, final_zh)
+            print(f"✅ Saved refined ZH transcript: {final_zh}")
+            
+        final_en = os.path.join(sermon_dir, 'translation_en.txt')
+        if os.path.exists(en_tmp):
+            os.replace(en_tmp, final_en)
+            print(f"✅ Saved translation: {final_en}")
+
+        print(f"✅ Audio processing complete: {metadata['title']}")
+        # break # debug---------- (keep the outer break for now as in draft)
 
 
-def process_audio(metadata_path: str) -> None:
+def split_audio(metadata_path: str) -> list[str]:
     """
-    Transcribes, refines, and translates audio transcript.
-    Leverages natural segmentation from transcription.
+    Splits original.mp3 into 1-minute chunks with 10s overlap.
+    Saves to a 'chunks/' subfolder.
     """
-    with open(metadata_path, 'r', encoding='utf-8') as f:
-        metadata = json.load(f)
-
+    from pydub import AudioSegment
     sermon_dir = os.path.dirname(metadata_path)
     audio_path = os.path.join(sermon_dir, 'original.mp3')
+    chunks_dir = os.path.join(sermon_dir, 'chunks')
+    os.makedirs(chunks_dir, exist_ok=True)
 
     if not os.path.exists(audio_path):
-        print(f"⚠️ Original audio not found for {metadata.get('title')}")
-        return
+        return []
 
-    print(f"\n⚙️ Processing: {metadata.get('title')} ({metadata_path})")
-
-    # 1. Incremental Transcription, Refinement, and Translation
-    print(f"🎙️ Processing audio segments: {audio_path}")
-
-    transcript_zh_path = os.path.join(sermon_dir, 'transcript_zh.txt')
-    translation_en_path = os.path.join(sermon_dir, 'translation_en.txt')
-    transcript_zh_tmp = transcript_zh_path + ".tmp.txt"
-    translation_en_tmp = translation_en_path + ".tmp.txt"
-
-    # Clear existing tmp files
-    for tmp_file in [transcript_zh_tmp, translation_en_tmp]:
-        if os.path.exists(tmp_file):
-            os.remove(tmp_file)
-
-    for segment_text in transcript_audio(audio_path):
-        print('Processed segment: ' + segment_text[:200] + '...')
-        # 1a. Refine ZH Transcript Segment
-        refined_zh = refine_transcript(segment_text)
-        print('Refined segment as: ' + refined_zh[:200] + '...')
-        with open(transcript_zh_tmp, 'a', encoding='utf-8') as f:
-            f.write(refined_zh + "\n\n")
-
-        # 1b. Translate to EN Segment (Native American Style)
-        translated_en = translate_transcript(refined_zh)
-        print('Translated segment as: ' + translated_en[:200] + '...\n\n')
-        with open(translation_en_tmp, 'a', encoding='utf-8') as f:
-            f.write(translated_en + "\n\n")
-
-    # 2. Finalize files: Move .tmp to final path
-    if os.path.exists(transcript_zh_tmp):
-        os.replace(transcript_zh_tmp, transcript_zh_path)
-        print(f"✅ Saved refined ZH transcript: {transcript_zh_path}")
-
-    if os.path.exists(translation_en_tmp):
-        os.replace(translation_en_tmp, translation_en_path)
-        print(f"✅ Saved translation: {translation_en_path}")
-
-    print(f"✅ Audio processing complete: {metadata['title']}")
+    print(f"🎙️ Splitting audio: {audio_path}")
+    audio = AudioSegment.from_file(audio_path)
+    
+    total_ms = len(audio)
+    chunk_ms = 60 * 1000  # 1 minute
+    overlap_ms = 10 * 1000 # 10 seconds
+    
+    chunk_paths = []
+    # Step through with (chunk_ms - overlap_ms) to maintain overlap
+    for i, start_ms in enumerate(range(0, total_ms, chunk_ms - overlap_ms)):
+        end_ms = min(start_ms + chunk_ms, total_ms)
+        chunk_name = f"chunk_{i:03d}.mp3"
+        cp = os.path.join(chunks_dir, chunk_name)
+        
+        # Only export if doesn't exist to save time
+        if not os.path.exists(cp):
+            chunk = audio[start_ms:end_ms]
+            chunk.export(cp, format="mp3")
+        
+        chunk_paths.append(cp)
+        if end_ms >= total_ms: break
+        
+    return sorted(chunk_paths)
 
 
-def get_whisper_model():
-    from faster_whisper import WhisperModel
-    global WHISPER_MODEL
-    if WHISPER_MODEL is not None:
-        return WHISPER_MODEL
-    # NOTE: large-v2 is used instead of large-v3 because large-v3 has a known issue
-    # where it hallucinated internet-style "Subscribe/Donate" prompts in Chinese audio.
-    # e.g. "请不吝点赞 转发支持明镜与点点栏目 请不吝点赞 转发支持明镜与点点栏目"
-    # ref: https://github.com/SYSTRAN/faster-whisper/issues/587
-    model_size = "large-v2"
-    download_root = os.path.expanduser("~/llm_models/whisper")
-    # Check if the model directory exists within the download root
-    # faster-whisper uses a specific naming convention: models--Systran--faster-whisper-large-v2
-    model_dir = os.path.join(download_root, f"models--Systran--faster-whisper-{model_size}")
-    if not os.path.exists(model_dir):
-        print(f"📥 Model '{model_size}' not found in {download_root}. This might take a while to download (approx 3GB)...")
-    else:
-        print(f"🚀 Loading Whisper model '{model_size}'...")
+def read_audio(audio_path: str, zh_tmp_path: str, en_tmp_path: str) -> None:
+    """
+    Processes a single audio chunk: Transcribe -> Refine -> Translate -> Append.
+    """
+    print(f"🎙️ Reading chunk: {os.path.basename(audio_path)}")
+    
+    # 1. Transcribe
+    text = transcribe_audio(audio_path)
+    if not text.strip(): return
+
+    # 2. Refine (ZH)
+    refined_zh = refine_text(text)
+    with open(zh_tmp_path, 'a', encoding='utf-8') as f:
+        f.write(refined_zh + "\n\n")
+
+    # 3. Translate (EN)
+    translated_en = translate_text(refined_zh)
+    with open(en_tmp_path, 'a', encoding='utf-8') as f:
+        f.write(translated_en + "\n\n")
+
+
+def get_asr_model():
+    """
+    Lazy loader for Paraformer-large.
+    """
+    global ASR_MODEL
+    if ASR_MODEL is not None:
+        return ASR_MODEL
+
+    import torch
+    from funasr import AutoModel
+    
+    print(f"🚀 Loading Paraformer-large...")
+    funasr_root = os.path.expanduser("~/llm_models/funasr")
+    os.environ["MODELSCOPE_CACHE"] = funasr_root
+    
     start = time()
-    WHISPER_MODEL = WhisperModel(
-        model_size,
-        device="cpu",
-        compute_type="int8",
-        cpu_threads=8, # M1 has 8 cores
-        download_root=download_root
+    ASR_MODEL = AutoModel(
+        model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        punc_model="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        disable_update=True
     )
-    print(f'\tUsed {time()-start:,.0f}s to load model.')
-    return WHISPER_MODEL
+    print(f"\tModel loaded in {time()-start:,.0f}s")
+    return ASR_MODEL
 
 
-def transcript_audio(audio_path: str):
-    model = get_whisper_model()
-    print(f"🎙️ Transcribing: {audio_path}")
-    # Use a prompt to help with bilingual context and theological terms
-    initial_prompt = "A sermon transcript containing both Mandarin and English. It includes biblical references and theological terms."
-    segments, info = model.transcribe(
-        audio_path,
-        beam_size=5,
-        initial_prompt=initial_prompt,
-        vad_filter=True,
-        vad_parameters=dict(
-            min_silence_duration_ms=1000,
-            speech_pad_ms=400
-        ),
-        repetition_penalty=1.2,
-        no_speech_threshold=0.6
-    )
-
-    current_chunk = []
-    chunk_start = None
-    target_duration = 60  # seconds
-
-    for segment in segments:
-        if chunk_start is None:
-            chunk_start = segment.start
-
-        current_chunk.append(segment.text.strip())
-
-        # If the segment pushes us past the target duration, yield the chunk
-        if segment.end - chunk_start >= target_duration:
-            yield " ".join(current_chunk) + " "
-            current_chunk = []
-            chunk_start = None
-
-    if current_chunk:
-        yield " ".join(current_chunk) + " "
+def transcribe_audio(audio_path: str) -> str:
+    """
+    Transcribes audio using Paraformer-large.
+    """
+    model = get_asr_model()
+    res = model.generate(input=audio_path)
+    if not res: return ""
+    return res[0].get('text', '').strip()
 
 
-def refine_transcript(text: str) -> str:
-    print(f"✍️ Refining ZH transcript segment...")
+def refine_text(text: str) -> str:
+    """
+    Refines Chinese transcript for biblical accuracy and punctuation.
+    """
+    print(f"✍️ Refining ZH text segment...")
     prompt = f"""
     Refine this Chinese sermon transcript for punctuation, speaker identification, and character errors.
     Keep it verbatim but clean it up for reading.
-    Return the result in JSON format with the key "refined_text".
+    Most importantly: it must use biblical terms where applicable.
+    Return ONLY the refined text in the 'refined_text' key of a JSON object.
 
     Content:
-    {text[:8000]}
+    {text}
     """
     data = ask_llm(prompt, num_ctx=8192)
-    # Robust key extraction
-    return (
-        data.get('refined_text') or
-        data.get('cleaned_content') or
-        data.get('text') or
-        data.get('content') or
-        str(data)
-    )
+    return data.get('refined_text', str(data))
 
 
-def translate_transcript(text: str) -> str:
-    print(f"🌐 Translating to English (Native American style)...")
+def translate_text(text: str) -> str:
+    """
+    Translates ZH text to EN (Native American Style).
+    """
+    print(f"🌐 Translating to English...")
     prompt = f"""
     Translate the following Chinese sermon transcript to English.
     STRICT REQUIREMENT: Use native American English terms, idioms, and phrases.
-    It should sound like a native speaker born and raised in the US.
-    Ensure biblical and theological accuracy and clear flow.
-    Return the result in JSON format with the key "translation".
+    Ensure theological accuracy and clear flow.
+    Return ONLY the translation in the 'translation' key of a JSON object.
 
     Content:
-    {text[:8000]}
+    {text}
     """
     data = ask_llm(prompt, num_ctx=8192)
-    # Robust key extraction
-    return (
-        data.get('translation') or
-        data.get('translated_text') or
-        data.get('text') or
-        data.get('content') or
-        str(data)
-    )
+    return data.get('translation', str(data))
 
 
 if __name__ == '__main__':
