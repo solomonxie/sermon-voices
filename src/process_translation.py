@@ -1,58 +1,64 @@
 import os
 import json
+import argparse
 from glob import glob
 from pydub import AudioSegment
 from src.common import ask_llm, get_custom_instructions
 from src.constants import OUTPUT_ROOT
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Phase 3: Translation & Text-to-Speech (ZH -> EN)")
+    parser.add_argument("metadata_path", help="Path to the metadata.json file to process")
+    args = parser.parse_args()
+
     print(f"\n--- Phase 3: Translation & Text-to-Speech (ZH -> EN) ---")
-    metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
+    process_sermon(args.metadata_path)
+
+
+def process_sermon(metadata_path: str) -> None:
+    sermon_dir = os.path.dirname(metadata_path)
+    final_en = os.path.join(sermon_dir, 'translation_en.txt')
+    final_audio_en = os.path.join(sermon_dir, 'audio_en.mp3')
     
-    for metadata_path in sorted(metadata_files):
-        sermon_dir = os.path.dirname(metadata_path)
-        final_en = os.path.join(sermon_dir, 'translation_en.txt')
-        final_audio_en = os.path.join(sermon_dir, 'audio_en.mp3')
+    # Checkpoint: Skip if already processed (both translation and audio)
+    if os.path.exists(final_en) and os.path.exists(final_audio_en):
+        return
         
-        # Checkpoint: Skip if already processed (both translation and audio)
-        if os.path.exists(final_en) and os.path.exists(final_audio_en):
-            continue
-            
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
+    with open(metadata_path, 'r', encoding='utf-8') as f:
+        metadata = json.load(f)
+    
+    print(f"\n⚙️ Processing Translation & TTS: {metadata.get('title')} ({metadata_path})")
+    
+    # 1. Translate Transcript
+    transcript_zh_path = os.path.join(sermon_dir, 'transcript_zh.txt')
+    if not os.path.exists(transcript_zh_path):
+        print(f"⚠️ Transcript (ZH) not found: {transcript_zh_path}")
+        return
+
+    if not os.path.exists(final_en):
+        print(f"🌐 Translating to English...")
+        with open(transcript_zh_path, 'r', encoding='utf-8') as f:
+            content_zh = f.read()
         
-        print(f"\n⚙️ Processing Translation & TTS: {metadata.get('title')} ({metadata_path})")
+        preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
+        translation_instr = get_custom_instructions(preacher_dir, "translate.md")
         
-        # 1. Translate Transcript
-        transcript_zh_path = os.path.join(sermon_dir, 'transcript_zh.txt')
-        if not os.path.exists(transcript_zh_path):
-            print(f"⚠️ Transcript (ZH) not found: {transcript_zh_path}")
-            continue
+        translation_en = translate_text(content_zh, custom_instructions=translation_instr)
+        with open(final_en, 'w', encoding='utf-8') as f:
+            f.write(translation_en)
+        print(f"✅ Saved translation: {final_en}")
+    else:
+        with open(final_en, 'r', encoding='utf-8') as f:
+            translation_en = f.read()
 
-        if not os.path.exists(final_en):
-            print(f"🌐 Translating to English...")
-            with open(transcript_zh_path, 'r', encoding='utf-8') as f:
-                content_zh = f.read()
-            
-            preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
-            translation_instr = get_custom_instructions(preacher_dir, "translate.md")
-            
-            translation_en = translate_text(content_zh, custom_instructions=translation_instr)
-            with open(final_en, 'w', encoding='utf-8') as f:
-                f.write(translation_en)
-            print(f"✅ Saved translation: {final_en}")
-        else:
-            with open(final_en, 'r', encoding='utf-8') as f:
-                translation_en = f.read()
+    # 2. Generate TTS
+    if not os.path.exists(final_audio_en):
+        try:
+            process_tts(metadata_path, translation_en)
+        except Exception as e:
+            print(f"❌ Error processing TTS for {metadata_path}: {str(e)}")
 
-        # 2. Generate TTS
-        if not os.path.exists(final_audio_en):
-            try:
-                process_tts(metadata_path, translation_en)
-            except Exception as e:
-                print(f"❌ Error processing TTS for {metadata_path}: {str(e)}")
-
-        print(f"✅ Translation and TTS complete: {metadata['title']}")
+    print(f"✅ Translation and TTS complete: {metadata['title']}")
 
 
 def translate_text(text: str, custom_instructions: str = "") -> str:
