@@ -10,9 +10,11 @@ PYTHON_VENV := $(VENV_DIR)/bin/python
 help:
 	@echo "Sermon Voices - Available Commands:"
 	@echo "  make setup          Install all dependencies"
-	@echo "  make process        Run full pipeline (Metadata + Audio)"
+	@echo "  make process        Run full pipeline (Metadata + Audio + Translation + PDF)"
 	@echo "  make metadata       Phase 1: Metadata Extraction"
-	@echo "  make audio          Phase 2: Audio Processing"
+	@echo "  make audio          Phase 2: Audio Transcription & Refinement"
+	@echo "  make translation    Phase 3: Translation & Text-to-Speech (ZH -> EN)"
+	@echo "  make pdf            Phase 4: Document Generation (Markdown/LaTeX/PDF)"
 	@echo "  make clean-output   Delete all generated files"
 	@echo "  make check-deps     Verify dependencies"
 	@echo "  make test           Run tests"
@@ -49,23 +51,24 @@ clean-output:
 	@echo "Cleaning output directory..."
 	rm -rf output/*
 
-process: metadata audio pdf tts
+process: metadata audio translation pdf
 
 metadata:
 	@echo "Running Phase 1: Metadata Extraction..."
 	@PYTHONPATH=. $(PYTHON_VENV) src/process_metadata.py
 
 audio:
-	@echo "Running Phase 2: Audio Transcription & Translation (ZH -> EN)..."
+	@echo "Running Phase 2: Audio Transcription & Refinement (Original Language)..."
 	@PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py
 
+translation:
+	@echo "Running Phase 3: Translation & Text-to-Speech (ZH -> EN)..."
+	@PYTHONPATH=. $(PYTHON_VENV) src/process_translation.py
+
 pdf:
-	@echo "Running Phase 3: Document Generation (Markdown/LaTeX/PDF)..."
+	@echo "Running Phase 4: Document Generation (Markdown/LaTeX/PDF)..."
 	@PYTHONPATH=. $(PYTHON_VENV) src/process_pdf.py
 
-tts:
-	@echo "Running Phase 4: Text-to-Speech (Audio EN)..."
-	@PYTHONPATH=. $(PYTHON_VENV) src/process_tts.py
 
 check-deps:
 	@$(PYTHON) --version

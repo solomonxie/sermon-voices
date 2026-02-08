@@ -10,7 +10,7 @@ from src.constants import OUTPUT_ROOT
 ASR_MODEL = None
 
 def main() -> None:
-    print(f"\n--- Phase 2: Audio Transcription, Refinement & Translation ---")
+    print(f"\n--- Phase 2: Audio Transcription & Refinement ---")
     metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
     # debug---------- (optional: user had one break in draft)
     metadata_files = [
@@ -36,37 +36,27 @@ def main() -> None:
         
         # 2. Sequential processing
         zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-        en_tmp = os.path.join(sermon_dir, 'translation_en_tmp.txt')
         
         safe_remove(zh_tmp)
-        safe_remove(en_tmp)
             
         # Load custom instructions for this preacher
         preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
-        transcript_instr = get_custom_instructions(preacher_dir, "transcript_instruction.md")
-        translation_instr = get_custom_instructions(preacher_dir, "translation_instruction.md")
+        transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
 
         prev_context = ""
         for chunk_path in chunk_paths:
             try:
-                prev_context = process_chunk(chunk_path, zh_tmp, en_tmp, transcript_instr, translation_instr, prev_context=prev_context)
+                prev_context = process_chunk(chunk_path, zh_tmp, transcript_instr, prev_context=prev_context)
             except Exception as e:
                 print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
                 prev_context = ""
-            # break # debug---------- (optional: user had one break in draft)
             
         # 3. Finalize: move tmp to final
         if os.path.exists(zh_tmp):
             os.replace(zh_tmp, final_zh)
             print(f"✅ Saved refined ZH transcript: {final_zh}")
-            
-        final_en = os.path.join(sermon_dir, 'translation_en.txt')
-        if os.path.exists(en_tmp):
-            os.replace(en_tmp, final_en)
-            print(f"✅ Saved translation: {final_en}")
 
         print(f"✅ Audio processing complete: {metadata['title']}")
-        # break # debug---------- (keep the outer break for now as in draft)
 
 
 def split_audio(metadata_path: str) -> list[str]:
@@ -108,9 +98,9 @@ def split_audio(metadata_path: str) -> list[str]:
     return sorted(chunk_paths)
 
 
-def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str, transcript_instr: str = "", translation_instr: str = "", prev_context: str = "") -> str:
+def process_chunk(audio_path: str, zh_tmp_path: str, transcript_instr: str = "", prev_context: str = "") -> str:
     """
-    Processes a single audio chunk: Transcribe -> Refine -> Translate -> Append.
+    Processes a single audio chunk: Transcribe -> Refine -> Append.
     Returns the refined ZH text to be used as context for the next chunk.
     """
     print(f"🎙️ Reading chunk: {os.path.basename(audio_path)}")
@@ -126,11 +116,6 @@ def process_chunk(audio_path: str, zh_tmp_path: str, en_tmp_path: str, transcrip
     refined_zh = refine_text(text, custom_instructions=transcript_instr, prev_context=prev_context)
     with open(zh_tmp_path, 'a', encoding='utf-8') as f:
         f.write(refined_zh + "\n\n")
-
-    # 3. Translate (EN)
-    translated_en = translate_text(refined_zh, custom_instructions=translation_instr)
-    with open(en_tmp_path, 'a', encoding='utf-8') as f:
-        f.write(translated_en + "\n\n")
     
     return refined_zh
 
@@ -227,7 +212,10 @@ def refine_text(text: str, custom_instructions: str = "", prev_context: str = ""
     3. PUNCTUATION & FLOW: Improve punctuation for readability. Separate text into logical paragraphs.
     4. CONTEXTUAL SENSE: Each sentence MUST make sense in the surrounding context. Correct grammatical errors. Rephrase sentences to make them clear, natural, and professional.
     5. REDUNDANCY REMOVAL: Aggressively remove oral repetitions, filler words, and meaningfully identical phrases. Consolidate repeated points into a single, cohesive statement.
-    6. TRANSITIONS: Use the provided 'PREVIOUS CONTEXT' to ensure the current chunk flows naturally from the last sentence of the previous segment. Do NOT repeat content already present in the previous context.
+    6. TONE & STYLE: Maintain the preacher's original tone, depth, and "voice." 
+       - DO NOT turn the transcript into a structural summary or an essay.
+       - This is a TRANSCRIPT, not a summary. Keep the first-person perspective if present.
+    7. TRANSITIONS: Use the provided 'PREVIOUS CONTEXT' to ensure the current chunk flows naturally from the last sentence of the previous segment. Do NOT repeat content already present in the previous context.
     
     Output MUST be a valid JSON object with a single key 'refined_text' containing the refined content.
     Do NOT include any markdown formatting, preamble, or footer.
@@ -245,31 +233,6 @@ def refine_text(text: str, custom_instructions: str = "", prev_context: str = ""
         return text
 
 
-def translate_text(text: str, custom_instructions: str = "") -> str:
-    """
-    Translates ZH text to EN (Biblical and Professional style).
-    """
-    print(f"🌐 Translating to English...")
-    prompt = f"""
-    Translate the following Chinese sermon transcript to English based on these rules:
-    1. BIBLICAL ACCURACY: Strictly follow biblical context.
-    2. Use established English biblical names and terms (e.g., 'Zion' instead of 'Xi'an').
-    3. NATIVE FLUENCY: Use professional, natural English suitable for a sermon.
-    4. GRAMMATICAL CORRECTNESS: Ensure every phrase and sentence is grammatically correct and makes common sense.
-    5. PRESERVE MEANING: Maintain the speaker's original intent and theological depth.
-    Output MUST be a valid JSON object with a single key 'translation' containing the translated content.
-    Do NOT include any markdown formatting, preamble, or footer.
-    {custom_instructions}
-
-    Content:
-    {text}
-    """
-    try:
-        data = ask_llm(prompt, num_ctx=8192)
-        return data.get('translation', text)
-    except Exception as e:
-        print(f"⚠️ Translation failed, using original text: {e}")
-        return text
 
 
 if __name__ == '__main__':

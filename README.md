@@ -56,16 +56,26 @@ make process
 
 ### Run the Pipeline
 
-The pipeline is split into two independent, idempotent phases:
+The pipeline is split into four independent, idempotent phases:
 
-1.  **Metadata Extraction**: Extracts metadata from audio files in `blobs/` and organizes them into the `output/` directory. Completion is tracked in `output/processed.txt`.
+1.  **Metadata Extraction**: Extracts metadata from audio files in `blobs/` and organizes them into the `output/` directory.
     ```bash
     make metadata
     ```
 
-2.  **Audio Processing**: Performs transcription, translation, and TTS. Each step checks for existing output files (e.g., `_refined.txt`, `audio_en.mp3`) and skips them if they exist, allowing for safe resumes.
+2.  **Audio Processing**: Performs transcription and refinement of the original language.
     ```bash
     make audio
+    ```
+
+3.  **Translation & TTS**: Translates the transcript to English and generates English audio via voice cloning.
+    ```bash
+    make translation
+    ```
+
+4.  **Document Generation**: Converts the English transcript to Markdown, LaTeX, and PDF.
+    ```bash
+    make pdf
     ```
 
 To run both phases in sequence:
@@ -77,15 +87,16 @@ The processing pipeline is split into two main phases, each functioning as an in
 
 1.  **Metadata Extraction** ([process_metadata.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/process_metadata.py)):
     -   Scans `blobs/` for new MP3 files.
-    -   Uses LLMs to extract preacher, series, title, scripture, and date from file paths.
-    -   Translates metadata to English and creates a slugified directory structure in `output/`.
-    -   Completion is tracked in `output/processed.txt`.
+    -   Uses LLMs to extract preacher, series, title, scripture, and date.
+    -   Creates a slugified directory structure in `output/`.
 2.  **Audio Processing** ([process_audio.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/process_audio.py)):
     -   Chunking the audio for efficient processing.
-    -   Transcribing (Whisper) and Translating (Ollama) each chunk.
-    -   Combining and Refining the final English transcript.
-    -   Converting to Markdown/PDF and generating TTS audio with cloned voices.
-    -   Idempotent execution: skips steps if output files already exist.
+    -   Transcribing (Paraformer-large) and Refining (Ollama) the original language.
+3.  **Translation & TTS** ([process_translation.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/process_translation.py)):
+    -   Translating refined transcript (Ollama).
+    -   Generating TTS audio with cloned voices (XTTS v2).
+4.  **Document Generation** ([process_pdf.py](file:///Users/solomonxie/workspace/personal/sermon-voices/src/process_pdf.py)):
+    -   Converting final English text to Markdown/LaTeX/PDF.
 
 ## Project Structure
 
@@ -99,8 +110,10 @@ sermon-voices/
 │   │           ├── original.mp3
 │   │           ├── metadata.json
 │   │           ├── transcript_zh.txt
+│   │           ├── translation_en.txt
 │   │           ├── audio_en.mp3
-│   │           └── sermon.pdf
+│   │           ├── translation_en.md
+│   │           └── translation_en.pdf
 │   └── processing_status.json # Pipeline state and file hashes
 ├── src/                    # Core Python pipeline
 └── scripts/                # Utility scripts
