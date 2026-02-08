@@ -8,4 +8,4 @@ OUTPUT_ROOT = './output'
 BLOBS_ROOT = './blobs'
 PROCESSED_LOG = os.path.join(OUTPUT_ROOT, 'processed.txt')
 TRANSLATION_MAP_PATH = os.path.join(OUTPUT_ROOT, 'translation_map.txt')
-FIREREDASR_MODEL_ROOT = './pretrained_models'
+MODELSCOPE_CACHE = os.path.expanduser('~/llm_models/modelscope')

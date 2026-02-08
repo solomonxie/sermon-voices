@@ -6,19 +6,12 @@ import tempfile
 from glob import glob
 from time import time
 
-import sys
 import gc
 import torch
 from pydub import AudioSegment
 
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace
-from src.constants import OUTPUT_ROOT, FIREREDASR_MODEL_ROOT
-
-# Ensure FireRedASR is in sys.path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-firered_asr_repo = os.path.join(project_root, "FireRedASR")
-if firered_asr_repo not in sys.path:
-    sys.path.append(firered_asr_repo)
+from src.constants import OUTPUT_ROOT, MODELSCOPE_CACHE
 
 ASR_MODEL = None
 
@@ -58,11 +51,7 @@ def process_sermon(audio_path: str) -> None:
 
     prev_context = ""
     for chunk_path in chunk_paths:
-        try:
-            prev_context = process_chunk(chunk_path, prev_context=prev_context)
-        except Exception as e:
-            print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
-            raise
+        prev_context = process_chunk(chunk_path, prev_context=prev_context)
 
     # 3. Finalize: replace tmp with final and cleanup
     safe_replace(zh_tmp, final_zh)
@@ -88,7 +77,7 @@ def split_audio(audio_path: str) -> list[str]:
     audio = AudioSegment.from_file(audio_path)
 
     total_ms = len(audio)
-    chunk_ms = 30 * 1000  # 30 seconds for best FireRedASR-LLM accuracy
+    chunk_ms = 60 * 1000  # 60 seconds - Qwen3-ASR handles longer audio well
     overlap_ms = 0 # No overlap to prevent repetitions
 
     chunk_paths = []
@@ -101,7 +90,7 @@ def split_audio(audio_path: str) -> list[str]:
         # Only export if doesn't exist to save time
         if not os.path.exists(cp):
             chunk = audio[start_ms:end_ms]
-            # FireRedASR requires 16kHz mono PCM
+            # Qwen3-ASR works with 16kHz mono PCM
             chunk = chunk.set_frame_rate(16000).set_channels(1)
             chunk.export(cp, format="wav", codec="pcm_s16le")
 
@@ -146,25 +135,28 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
 
 def get_asr_model(force_cpu: bool = False):
     """
-    Lazy loader for FireRedASR-LLM-L.
+    Lazy loader for Qwen3-ASR-0.6B.
     """
     global ASR_MODEL
     if ASR_MODEL is not None:
         return ASR_MODEL
 
-    from fireredasr.models.fireredasr import FireRedAsr
+    from qwen_asr import Qwen3ASRModel
     
-    model_dir = os.path.join(FIREREDASR_MODEL_ROOT, "FireRedASR-LLM-L")
-    print(f"🚀 Loading FireRedASR-LLM-L (ASR) from {model_dir}...")
+    # Set ModelScope cache directory
+    os.environ["MODELSCOPE_CACHE"] = MODELSCOPE_CACHE
+    
+    print(f"🚀 Loading Qwen3-ASR-0.6B from ModelScope...")
     
     start = time()
     
-    # FireRedASR internally handles device placement if possible, 
-    # but we can specify use_gpu in transcribe call.
-    # Here we just load the model.
-    ASR_MODEL = FireRedAsr.from_pretrained(
-        "llm",
-        model_dir
+    # Use transformers backend (simpler, no vLLM required)
+    ASR_MODEL = Qwen3ASRModel.from_pretrained(
+        "Qwen/Qwen3-ASR-0.6B",
+        dtype=torch.bfloat16,
+        device_map="auto",
+        max_inference_batch_size=8,
+        max_new_tokens=512,
     )
     
     print(f"\tASR Model loaded in {time()-start:,.0f}s")
@@ -198,43 +190,24 @@ def get_punc_model():
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using FireRedASR with memory safety.
+    Transcribes audio using Qwen3-ASR with memory safety.
     """
-    try:
-        model = get_asr_model()
-        
-        # FireRedASR expectations: batch_uttid, batch_wav_path, params
-        batch_uttid = ["chunk"]
-        batch_wav_path = [audio_path]
-        
-        # Recommended params for LLM variant
-        use_gpu = 1 if (torch.cuda.is_available() or torch.backends.mps.is_available()) else 0
-        
-        results = model.transcribe(
-            batch_uttid,
-            batch_wav_path,
-            {
-                "use_gpu": use_gpu,
-                "beam_size": 3,
-                "decode_max_len": 0,
-                "decode_min_len": 0,
-                "repetition_penalty": 3.0,
-                "llm_length_penalty": 1.0,
-                "temperature": 1.0
-            }
-        )
-        
-        # Immediate cleanup for MPS stability
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-        gc.collect()
+    model = get_asr_model()
+    
+    # Qwen3-ASR has a much simpler API
+    results = model.transcribe(
+        audio=audio_path,
+        language=None,  # Auto-detect language (Chinese or English)
+    )
+    
+    # Immediate cleanup for MPS stability
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.collect()
 
-        if not results: return ""
-        # results is a list of strings for each uttid
-        return results[0].strip()
-    except Exception as e:
-        print(f"❌ Transcription error: {str(e)}")
-        raise e
+    if not results: return ""
+    # results[0] contains the transcription result
+    return results[0].text.strip()
 
 
 def enhance_punctuation(text: str) -> str:
@@ -280,15 +253,9 @@ def refine_text(text: str, custom_instructions: str = "", prev_context: str = ""
     Content to Refine:
     {text}
     """
-    try:
-        data = ask_llm(prompt, num_ctx=8192)
-        return data.get('refined_text', text)
-    except Exception as e:
-        print(f"⚠️ Refinement failed, using original text: {e}")
-        return text
-
-
-
+    data = ask_llm(prompt, num_ctx=10240)
+    return data.get('refined_text', text)
+    
 
 if __name__ == '__main__':
     main()

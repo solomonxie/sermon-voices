@@ -1,6 +1,6 @@
 # Sermon Voices - Makefile
 
-.PHONY: help setup setup-python setup-ollama clean-output process metadata audio check-deps models-info test
+.PHONY: help setup setup-python clean-output process metadata audio check-deps models-info test
 
 VENV_DIR := venv
 PYTHON := python3.11
@@ -19,7 +19,7 @@ help:
 	@echo "  make check-deps     Verify dependencies"
 	@echo "  make test           Run tests"
 
-setup: setup-system setup-python setup-ollama
+setup: setup-system setup-python
 
 setup-system:
 	@echo "Installing system dependencies..."
@@ -43,9 +43,7 @@ setup-python:
 	@$(PIP) install --upgrade pip
 	@$(PIP) install -r requirements.txt
 
-setup-ollama:
-	@echo "Setting up Ollama models..."
-	@ollama pull qwen3:8b
+
 
 clean-output:
 	@echo "Cleaning output directory..."
@@ -59,15 +57,15 @@ metadata:
 
 audio:
 	@echo "Running Phase 2: Audio Transcription & Refinement (Original Language)..."
-	@find output -name original.mp3 -exec PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py {} \;
+	@find output -name original.mp3 -exec sh -c 'PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py "$$0"' {} \;
 
 translation:
 	@echo "Running Phase 3: Translation & Text-to-Speech (ZH -> EN)..."
-	@find output -name metadata.json -exec PYTHONPATH=. $(PYTHON_VENV) src/process_translation.py {} \;
+	@find output -name metadata.json -exec sh -c 'PYTHONPATH=. $(PYTHON_VENV) src/process_translation.py "$$0"' {} \;
 
 pdf:
 	@echo "Running Phase 4: Document Generation (Markdown/LaTeX/PDF)..."
-	@find output -name metadata.json -exec PYTHONPATH=. $(PYTHON_VENV) src/process_pdf.py {} \;
+	@find output -name metadata.json -exec sh -c 'PYTHONPATH=. $(PYTHON_VENV) src/process_pdf.py "$$0"' {} \;
 
 
 check-deps:
