@@ -12,14 +12,18 @@ Sermon Voices is a high-performance pipeline designed to process sermon audio/vi
 1.  **Metadata Phase (`src/process_metadata.py`)**:
     - Scans `blobs/` for new files.
     - Uses LLM to extract metadata (preacher, series, title, etc.).
-    - Translates metadata to English.
     - Moves/copies files to a structured directory in `output/`.
-    - **Checkpoint**: Uses `processed.txt` to track original files that have been successfully processed.
 
 2.  **Audio Phase (`src/process_audio.py`)**:
-    - Scans `output/` for folders containing `metadata.json`.
-    - **Idempotency**: Each processing step (chunking, transcription, translation, TTS) checks for the existence of its respective output file. If the file exists, the step is skipped.
-    - Steps are independent and can be resumed at any point.
+    - Focuses on the original language.
+    - Transcription and LLM-based Refinement of the original text.
+
+3.  **Translation & TTS Phase (`src/process_translation.py`)**:
+    - Translates refined transcript to English.
+    - Generates English audio via voice cloning (XTTS v2).
+
+4.  **Document Phase (`src/process_pdf.py`)**:
+    - Generates Markdown, LaTeX, and PDF formats for the English transcript.
 
 ### Core Workflow
 
@@ -27,13 +31,12 @@ Sermon Voices is a high-performance pipeline designed to process sermon audio/vi
 graph TD
     A[Blobs/ - Raw Files] --> B[Metadata Extraction - LLM]
     B --> C[File Reorganization - Slugified]
-    C --> D[Transcription - Whisper]
+    C --> D[Transcription - Paraformer]
     D --> E[Transcript Refinement - Ollama]
     E --> F[Translation - Ollama]
     F --> G[TTS / Voice Cloning - XTTSv2]
     G --> H[Document Generation - MD/PDF/LaTeX]
-    H --> I[Metadata.json Generation]
-    I --> J[Output/ - Structured Storage]
+    H --> I[Output/ - Structured Storage]
 ```
 
 ## Metadata & Tracking

@@ -4,7 +4,7 @@ from src.constants import OUTPUT_ROOT
 
 
 def main() -> None:
-    print(f"\n--- Phase 3: Document Generation (EN) ---")
+    print(f"\n--- Phase 4: Document Generation (EN) ---")
     from glob import glob
     metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
     for metadata_path in sorted(metadata_files):

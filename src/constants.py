@@ -1,7 +1,7 @@
 import os
 
 # Model Constants
-DEFAULT_MODEL = 'qwen3:8b'
+DEFAULT_MODEL = 'Qwen3-4B-Thinking-2507'
 
 # Path Constants
 OUTPUT_ROOT = './output'
