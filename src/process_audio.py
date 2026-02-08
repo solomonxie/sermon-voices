@@ -11,7 +11,7 @@ import torch
 from pydub import AudioSegment
 
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace
-from src.constants import OUTPUT_ROOT, MODELSCOPE_CACHE
+from src.constants import OUTPUT_ROOT, MODELSCOPE_CACHE, BIBLE_HOTWORDS_PATH
 
 
 def main() -> None:
@@ -167,12 +167,18 @@ def get_punc_model():
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using SenseVoiceSmall with memory safety.
+    Transcribes audio using SenseVoiceSmall with hotwords and memory safety.
     """
     model = get_asr_model()
+    
+    # Load hotwords
+    hotwords = ""
+    if os.path.exists(BIBLE_HOTWORDS_PATH):
+        with open(BIBLE_HOTWORDS_PATH, 'r', encoding='utf-8') as f:
+            hotwords = " ".join([line.strip() for line in f if line.strip()])
 
-    # FunASR AutoModel API
-    results = model.generate(input=audio_path)
+    # FunASR AutoModel API with hotwords
+    results = model.generate(input=audio_path, hotword=hotwords)
 
     # Immediate cleanup for MPS stability
     if torch.backends.mps.is_available():

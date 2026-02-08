@@ -1,8 +1,8 @@
 blobs/*
 !blobs/README.md
-output/*
-!output/**/*.md
-!output/translation_map.txt
+output/*/
+!output/*.md
+!output/*.txt
 .DS_Store
 *.pyc
 venv/*
