@@ -27,3 +27,12 @@ Strict adherence to these rules ensures a robust and maintainable codebase for t
 ## Quality Assurance
 - Tests: Every new feature or bug fix must include corresponding unit tests in tests/.
 - Linting: Ensure code is clean and passes basic syntax checks before committing.
+
+
+## Testing
+
+- All tests are located under tests/
+- Should distinguish different test types: units, models, functional, interface...
+- Testing code should be simple and easy to understand
+- Testing code don't need lots of prints/logs
+- Testing code don't need try-catch, it should expose error directly
