@@ -13,7 +13,6 @@ from pydub import AudioSegment
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace
 from src.constants import OUTPUT_ROOT, MODELSCOPE_CACHE
 
-ASR_MODEL = None
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement")
@@ -110,7 +109,7 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
     punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-    
+
     # Load custom instructions for this preacher
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
     transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
@@ -118,7 +117,7 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
     # 1. Transcribe
     text = transcribe_audio(audio_path)
     if not text.strip(): return ""
-    
+
     safe_write(orig_tmp, text)
 
     # 1.5 Enhance Punctuation
@@ -127,87 +126,60 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
 
     # 2. Refine (ZH)
     refined_zh = refine_text(text_punc, custom_instructions=transcript_instr, prev_context=prev_context)
-    
+
     safe_write(zh_tmp, refined_zh)
-            
+
     return refined_zh
 
 
 def get_asr_model(force_cpu: bool = False):
-    """
-    Lazy loader for Qwen3-ASR-0.6B.
-    """
-    global ASR_MODEL
-    if ASR_MODEL is not None:
-        return ASR_MODEL
-
-    from qwen_asr import Qwen3ASRModel
-    
+    from funasr import AutoModel
     # Set ModelScope cache directory
     os.environ["MODELSCOPE_CACHE"] = MODELSCOPE_CACHE
-    
-    print(f"🚀 Loading Qwen3-ASR-0.6B from ModelScope...")
-    
+    print(f"🚀 Loading SenseVoiceSmall from ModelScope...")
     start = time()
-    
-    # Use transformers backend (simpler, no vLLM required)
-    ASR_MODEL = Qwen3ASRModel.from_pretrained(
-        "Qwen/Qwen3-ASR-0.6B",
-        dtype=torch.bfloat16,
-        device_map="auto",
-        max_inference_batch_size=8,
-        max_new_tokens=512,
+    device = "cpu" if force_cpu else ("cuda" if torch.cuda.is_available() else "cpu")
+    model = AutoModel(
+        model="iic/SenseVoiceSmall",
+        device=device,
+        disable_update=True
     )
-    
     print(f"\tASR Model loaded in {time()-start:,.0f}s")
-    return ASR_MODEL
+    return model
 
-
-PUNC_MODEL = None
 
 def get_punc_model():
-    """
-    Lazy loader for ct-punc model via FunASR.
-    """
-    global PUNC_MODEL
-    if PUNC_MODEL is not None:
-        return PUNC_MODEL
-
     from funasr import AutoModel # Import only when needed to avoid conflicts
     print(f"🚀 Loading ct-punc (Punctuation)...")
     funasr_root = os.path.expanduser("~/llm_models/funasr")
     os.environ["MODELSCOPE_CACHE"] = funasr_root
-
     start = time()
-    PUNC_MODEL = AutoModel(
+    model = AutoModel(
         model="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
         device="cuda" if torch.cuda.is_available() else "cpu",
         disable_update=True
     )
     print(f"\tPunctuation Model loaded in {time()-start:,.0f}s")
-    return PUNC_MODEL
+    return model
 
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using Qwen3-ASR with memory safety.
+    Transcribes audio using SenseVoiceSmall with memory safety.
     """
     model = get_asr_model()
-    
-    # Qwen3-ASR has a much simpler API
-    results = model.transcribe(
-        audio=audio_path,
-        language=None,  # Auto-detect language (Chinese or English)
-    )
-    
+
+    # FunASR AutoModel API
+    results = model.generate(input=audio_path)
+
     # Immediate cleanup for MPS stability
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
     gc.collect()
 
     if not results: return ""
-    # results[0] contains the transcription result
-    return results[0].text.strip()
+    # Extract text from results
+    return results[0].get('text', '').strip()
 
 
 def enhance_punctuation(text: str) -> str:
@@ -230,32 +202,38 @@ def refine_text(text: str, custom_instructions: str = "", prev_context: str = ""
     if prev_context.strip():
         # Only take the last bit of the previous context to avoid bloating the prompt
         context_tail = prev_context[-300:] if len(prev_context) > 300 else prev_context
-        context_prefix = f"\nPREVIOUS CONTEXT (for flow and transition only):\n...{context_tail}\n--- END PREVIOUS CONTEXT ---\n"
+        context_prefix = f"\nPREVIOUS CONTEXT (for natural flow only):\n...{context_tail}\n--- END PREVIOUS CONTEXT ---\n"
 
     prompt = f"""
-    Refine this Chinese sermon transcript based on the following rules:
-    1. BIBLICAL CONTEXT: Ensure all terms, names, and theological concepts follow Chinese Union Version (CUV) or standard biblical terminology.
-    2. BIBLICAL NAMES: Prioritize biblical names over phonetic or common Chinese names (e.g., '彼得' instead of phonetically similar names, or '锡安' instead of '西安').
-    3. PUNCTUATION & FLOW: Improve punctuation for readability. Separate text into logical paragraphs.
-    4. CONTEXTUAL SENSE: Each sentence MUST make sense in the surrounding context. Correct grammatical errors. Rephrase sentences to make them clear, natural, and professional.
-    5. REDUNDANCY REMOVAL: Aggressively remove oral repetitions, filler words, and meaningfully identical phrases. Consolidate repeated points into a single, cohesive statement.
-    6. TONE & STYLE: Maintain the preacher's original tone, depth, and "voice."
-       - DO NOT turn the transcript into a structural summary or an essay.
-       - This is a TRANSCRIPT, not a summary. Keep the first-person perspective if present.
-    7. TRANSITIONS: Use the provided 'PREVIOUS CONTEXT' to ensure the current chunk flows naturally from the last sentence of the previous segment. Do NOT repeat content already present in the previous context.
-    8. POLISH: Polish each sentence to make it more smooth and more biblical.
+    You are refining a Chinese sermon transcript. Your PRIMARY goal is to PRESERVE the original speaker's exact words and speaking style.
 
-    Output MUST be a valid JSON object with a single key 'refined_text' containing the refined content.
-    Do NOT include any markdown formatting, preamble, or footer.
+    CRITICAL RULES - DO NOT VIOLATE:
+    1. PRESERVE ORIGINAL WORDING: Do NOT rephrase, rewrite, or paraphrase unless there is an obvious transcription error
+    2. KEEP REPETITIONS: Preachers intentionally repeat for emphasis - do NOT remove repetitions
+    3. KEEP SPEAKER'S STYLE: Maintain informal language, colloquialisms, and the speaker's unique voice
+    4. DO NOT SUMMARIZE: This is a transcript, not a summary - keep ALL content
+    5. DO NOT ADD CONTENT: Do not add explanations, interpretations, or theological commentary
+
+    WHAT YOU SHOULD FIX (ONLY):
+    - Punctuation: Add periods, commas, question marks for readability
+    - Biblical terms: Correct to Chinese Union Version standard (彼得, 保罗, 耶路撒冷, 使徒行传, etc.)
+    - Obvious ASR errors: Fix characters that clearly don't make sense (e.g., 耶鲁撒冷 → 耶路撒冷)
+    - Paragraph breaks: Separate into logical paragraphs for readability
+    - Flow: Ensure smooth transition from previous context (do NOT repeat previous content)
+    - Repeat: If the speaker stammers, repeat the word or phrase, remove it. e.g., "其他地方还还有没有难点" → "其他地方还有没有难点"; "这这个这个" → "这个"
+
     {custom_instructions}
     {context_prefix}
 
-    Content to Refine:
+    Original transcript (PRESERVE the speaker's exact words):
     {text}
+
+    Output MUST be valid JSON: {{"refined_text": "..."}}
+    Do NOT include markdown, preamble, or explanations.
     """
     data = ask_llm(prompt, num_ctx=10240)
     return data.get('refined_text', text)
-    
+
 
 if __name__ == '__main__':
     main()

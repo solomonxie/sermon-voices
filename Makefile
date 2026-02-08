@@ -57,7 +57,10 @@ metadata:
 
 audio:
 	@echo "Running Phase 2: Audio Transcription & Refinement (Original Language)..."
-	@find output -name original.mp3 -exec sh -c 'PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py "$$0"' {} \;
+	# @find output -name original.mp3 -exec sh -c 'PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py "$$0"' {} \;
+	# Debug----
+	PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py output/hua-xian/acts/001_do-not-leave-jerusalem/original.mp3
+	PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/original.mp3
 
 translation:
 	@echo "Running Phase 3: Translation & Text-to-Speech (ZH -> EN)..."
