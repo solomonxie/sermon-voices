@@ -6,13 +6,19 @@ import tempfile
 from glob import glob
 from time import time
 
+import sys
 import gc
 import torch
-from qwen_asr import Qwen3ASRModel
-
 from pydub import AudioSegment
+
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace
-from src.constants import OUTPUT_ROOT
+from src.constants import OUTPUT_ROOT, FIREREDASR_MODEL_ROOT
+
+# Ensure FireRedASR is in sys.path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+firered_asr_repo = os.path.join(project_root, "FireRedASR")
+if firered_asr_repo not in sys.path:
+    sys.path.append(firered_asr_repo)
 
 ASR_MODEL = None
 
@@ -71,8 +77,8 @@ def process_sermon(audio_path: str) -> None:
 
 def split_audio(audio_path: str) -> list[str]:
     """
-    Splits original.mp3 into 1-minute chunks with no overlap.
-    Saves to a 'chunks/' subfolder.
+    Splits original.mp3 into 30-second chunks with no overlap.
+    Saves to a 'chunks/' subfolder as WAV (16kHz, mono).
     """
     sermon_dir = os.path.dirname(audio_path)
     chunks_dir = os.path.join(sermon_dir, 'chunks')
@@ -82,20 +88,22 @@ def split_audio(audio_path: str) -> list[str]:
     audio = AudioSegment.from_file(audio_path)
 
     total_ms = len(audio)
-    chunk_ms = 60 * 1000  # 1 minute
+    chunk_ms = 30 * 1000  # 30 seconds for best FireRedASR-LLM accuracy
     overlap_ms = 0 # No overlap to prevent repetitions
 
     chunk_paths = []
     # Step through with precisely chunk_ms intervals
     for i, start_ms in enumerate(range(0, total_ms, chunk_ms)):
         end_ms = min(start_ms + chunk_ms, total_ms)
-        chunk_name = f"chunk_{i:03d}.mp3"
+        chunk_name = f"chunk_{i:03d}.wav"
         cp = os.path.join(chunks_dir, chunk_name)
 
         # Only export if doesn't exist to save time
         if not os.path.exists(cp):
             chunk = audio[start_ms:end_ms]
-            chunk.export(cp, format="mp3")
+            # FireRedASR requires 16kHz mono PCM
+            chunk = chunk.set_frame_rate(16000).set_channels(1)
+            chunk.export(cp, format="wav", codec="pcm_s16le")
 
         chunk_paths.append(cp)
         if end_ms >= total_ms: break
@@ -138,56 +146,27 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
 
 def get_asr_model(force_cpu: bool = False):
     """
-    Lazy loader for Qwen3-ASR-1.7B via qwen-asr library.
+    Lazy loader for FireRedASR-LLM-L.
     """
     global ASR_MODEL
     if ASR_MODEL is not None:
-        # If we already have a model and it's on the wrong device, we'd need to reload. 
-        # But for now, we assume once it's on CPU it stays there if forced.
-        if force_cpu and next(ASR_MODEL.model.parameters()).device.type != 'cpu':
-             ASR_MODEL = None
-        else:
-            return ASR_MODEL
+        return ASR_MODEL
 
-    print(f"🚀 Loading Qwen3-ASR-1.7B (ASR)...")
+    from fireredasr.models.fireredasr import FireRedAsr
     
-    huggingface_root = os.path.expanduser("~/llm_models/huggingface")
-    os.environ["HF_HOME"] = huggingface_root
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    model_dir = os.path.join(FIREREDASR_MODEL_ROOT, "FireRedASR-LLM-L")
+    print(f"🚀 Loading FireRedASR-LLM-L (ASR) from {model_dir}...")
     
-    # Optimization for MPS memory pressure: Set both Low and High to avoid "invalid ratio" errors
-    # Low must be <= High. Default low is often 1.4, so setting high to 0.7 triggers error.
-    os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.7"
-    os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.5"
-
     start = time()
     
-    # Device and dtype optimization for Mac/MPS, CUDA, or CPU
-    if torch.backends.mps.is_available() and not force_cpu:
-        print(f"\tUsing Apple Silicon (MPS) acceleration")
-        device_map = "mps"
-        dtype = torch.float16
-    elif torch.cuda.is_available() and not force_cpu:
-        print(f"\tUsing CUDA acceleration")
-        device_map = "auto"
-        dtype = torch.bfloat16
-    else:
-        print(f"\tUsing CPU (Slow but Stable)")
-        device_map = None
-        dtype = torch.float32
-
-    ASR_MODEL = Qwen3ASRModel.from_pretrained(
-        "Qwen/Qwen3-ASR-1.7B",
-        dtype=dtype,
-        device_map=device_map,
-        max_inference_batch_size=1, # Reduced for memory stability
-        cache_dir=huggingface_root,
+    # FireRedASR internally handles device placement if possible, 
+    # but we can specify use_gpu in transcribe call.
+    # Here we just load the model.
+    ASR_MODEL = FireRedAsr.from_pretrained(
+        "llm",
+        model_dir
     )
     
-    # Suppress "Setting `pad_token_id` to `eos_token_id`" warning
-    if ASR_MODEL.model.config.pad_token_id is None:
-        ASR_MODEL.model.config.pad_token_id = ASR_MODEL.model.config.eos_token_id
-
     print(f"\tASR Model loaded in {time()-start:,.0f}s")
     return ASR_MODEL
 
@@ -219,13 +198,30 @@ def get_punc_model():
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using Qwen3-ASR with memory safety and fallbacks.
+    Transcribes audio using FireRedASR with memory safety.
     """
     try:
         model = get_asr_model()
+        
+        # FireRedASR expectations: batch_uttid, batch_wav_path, params
+        batch_uttid = ["chunk"]
+        batch_wav_path = [audio_path]
+        
+        # Recommended params for LLM variant
+        use_gpu = 1 if (torch.cuda.is_available() or torch.backends.mps.is_available()) else 0
+        
         results = model.transcribe(
-            audio=audio_path,
-            language=None, # auto language detection
+            batch_uttid,
+            batch_wav_path,
+            {
+                "use_gpu": use_gpu,
+                "beam_size": 3,
+                "decode_max_len": 0,
+                "decode_min_len": 0,
+                "repetition_penalty": 3.0,
+                "llm_length_penalty": 1.0,
+                "temperature": 1.0
+            }
         )
         
         # Immediate cleanup for MPS stability
@@ -234,15 +230,10 @@ def transcribe_audio(audio_path: str) -> str:
         gc.collect()
 
         if not results: return ""
-        return " ".join([entry.text for entry in results]).strip()
+        # results is a list of strings for each uttid
+        return results[0].strip()
     except Exception as e:
-        # Check if it's a memory or backend error
-        err_msg = str(e)
-        if any(kw in err_msg for kw in ["MPS", "Memory", "buffer", "command buffer"]):
-            print(f"⚠️ ASR Backend Error: {err_msg}. Falling back to CPU...")
-            model = get_asr_model(force_cpu=True)
-            results = model.transcribe(audio=audio_path, language=None)
-            return " ".join([entry.text for entry in results]).strip()
+        print(f"❌ Transcription error: {str(e)}")
         raise e
 
 

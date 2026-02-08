@@ -6,6 +6,7 @@ import torch
 from time import time
 from qwen_asr import Qwen3ASRModel
 from src.common import ask_llm
+from src.constants import FIREREDASR_MODEL_ROOT
 
 JUDGE_MODEL = 'qwen3'
 
@@ -138,3 +139,53 @@ def test_funasr_paraformer_zh(sample):
 
 def test_funasr_punc_ct():
     pass
+
+
+@pytest.mark.parametrize("sample", SAMPLES)
+def test_firered_asr(sample):
+    from fireredasr.models.fireredasr import FireRedAsr
+    
+    model_dir = os.path.join(FIREREDASR_MODEL_ROOT, "FireRedASR-LLM-L")
+    if not os.path.exists(model_dir):
+        pytest.skip(f"Model not found: {model_dir}")
+
+    print(f"\n🚀 Loading FireRedASR-LLM-L...")
+    model = FireRedAsr.from_pretrained("llm", model_dir)
+    
+    audio_path = sample['path']
+    expected = sample['transcript']
+    
+    if not os.path.exists(audio_path):
+        pytest.skip(f"Audio not found: {audio_path}")
+
+    # FireRedASR expectations: batch_uttid, batch_wav_path, params
+    batch_uttid = ["chunk"]
+    batch_wav_path = [audio_path]
+    use_gpu = 1 if (torch.cuda.is_available() or torch.backends.mps.is_available()) else 0
+    
+    print(f"🎙️ Transcribing with FireRedASR: {audio_path}")
+    results = model.transcribe(
+        batch_uttid,
+        batch_wav_path,
+        {
+            "use_gpu": use_gpu,
+            "beam_size": 3,
+            "decode_max_len": 0,
+            "decode_min_len": 0,
+            "repetition_penalty": 3.0,
+            "llm_length_penalty": 1.0,
+            "temperature": 1.0
+        }
+    )
+    actual = results[0].strip()
+    
+    # Cleanup memory
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.collect()
+
+    print(f"📄 Result: {actual[:100]}...")
+
+    score = judge_asr_accuracy(expected, actual)
+    print(f"⭐️ Accuracy Score: {score:.2f}")
+    assert score >= 0.8
