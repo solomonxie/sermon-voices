@@ -42,10 +42,12 @@ def process_sermon(audio_path: str) -> None:
     # 2. Sequential processing
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
     punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
+    errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
 
     safe_remove(orig_tmp)
     safe_remove(punc_tmp)
+    safe_remove(errors_tmp)
     safe_remove(zh_tmp)
 
     prev_context = ""
@@ -54,12 +56,7 @@ def process_sermon(audio_path: str) -> None:
 
     # 3. Finalize: replace tmp with final and cleanup
     safe_replace(zh_tmp, final_zh)
-    if os.path.exists(final_zh):
-        print(f"✅ Saved refined ZH transcript: {final_zh}")
-        # Cleanup intermediate steps
-        safe_remove(orig_tmp)
-        safe_remove(punc_tmp)
-
+    print(f"✅ Saved refined ZH transcript: {final_zh}")
     print(f"✅ Audio processing complete: {audio_path}")
 
 
@@ -108,6 +105,7 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
     sermon_dir = os.path.dirname(os.path.dirname(audio_path))
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
     punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
+    errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
 
     # Load custom instructions for this preacher
@@ -124,8 +122,12 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
     text_punc = enhance_punctuation(text)
     safe_write(punc_tmp, text_punc)
 
+    # 1.6 Pick Errors
+    error_list = pick_errors(text_punc, custom_instructions=transcript_instr)
+    safe_write(errors_tmp, error_list)
+
     # 2. Refine (ZH)
-    refined_zh = refine_text(text_punc, custom_instructions=transcript_instr, prev_context=prev_context)
+    refined_zh = refine_text(text_punc, custom_instructions=transcript_instr, prev_context=prev_context, error_list=error_list)
 
     safe_write(zh_tmp, refined_zh)
 
@@ -192,7 +194,38 @@ def enhance_punctuation(text: str) -> str:
     return res[0].get('text', text).strip()
 
 
-def refine_text(text: str, custom_instructions: str = "", prev_context: str = "") -> str:
+def pick_errors(text: str, custom_instructions: str = "") -> str:
+    """
+    Identifies errors in the transcript (grammar, biblical facts, stammers).
+    Returns a bulleted list of errors.
+    """
+    print(f"🔍 Picking errors from transcript...")
+    prompt = f"""
+    You are an expert editor for Chinese sermon transcripts. 
+    Analyze the following punctuated transcript text and identify ANY errors.
+
+    ERROR CATEGORIES TO FIND:
+    - Grammarly Errors (Mandarin): Incorrect grammar, unnatural phrasing, or wrong word choices.
+    - Sentence Errors: Incomplete sentences, run-on sentences, or structural issues.
+    - Biblical Fact Errors: Incorrect Bible book names, figure names, place names, or verse numbers.
+    - Stammers and Fillers: Repetitive words from hesitations (e.g., "这这个这个", "还有还有") that should be flagged.
+    - Punctuation Errors: Missing or incorrect punctuation that affects meaning.
+
+    {custom_instructions}
+
+    Transcript to analyze:
+    {text}
+
+    Output MUST be a bulleted list of identified errors in JSON format: {{"errors": ["- Error 1", "- Error 2", ...]}}
+    If no errors are found, return {{"errors": []}}.
+    Do NOT include markdown, preamble, or explanations.
+    """
+    data = ask_llm(prompt, num_ctx=10240)
+    errors = data.get('errors', [])
+    return "\n".join(errors)
+
+
+def refine_text(text: str, custom_instructions: str = "", prev_context: str = "", error_list: str = "") -> str:
     """
     Refines Chinese transcript for biblical accuracy and punctuation.
     """
@@ -202,7 +235,10 @@ def refine_text(text: str, custom_instructions: str = "", prev_context: str = ""
     if prev_context.strip():
         # Only take the last bit of the previous context to avoid bloating the prompt
         context_tail = prev_context[-300:] if len(prev_context) > 300 else prev_context
-        context_prefix = f"\nPREVIOUS CONTEXT (for natural flow only):\n...{context_tail}\n--- END PREVIOUS CONTEXT ---\n"
+        context_prefix += f"\nPREVIOUS CONTEXT (for natural flow only):\n...{context_tail}\n--- END PREVIOUS CONTEXT ---\n"
+
+    if error_list.strip():
+        context_prefix += f"\nIDENTIFIED ERRORS TO FIX:\n{error_list}\n--- END ERRORS ---\n"
 
     prompt = f"""
     You are refining a Chinese sermon transcript. Your PRIMARY goal is to PRESERVE the original speaker's exact words and speaking style.
