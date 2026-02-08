@@ -214,6 +214,7 @@ def refine_text(text: str, custom_instructions: str = "", prev_context: str = ""
        - DO NOT turn the transcript into a structural summary or an essay.
        - This is a TRANSCRIPT, not a summary. Keep the first-person perspective if present.
     7. TRANSITIONS: Use the provided 'PREVIOUS CONTEXT' to ensure the current chunk flows naturally from the last sentence of the previous segment. Do NOT repeat content already present in the previous context.
+    8. POLISH: Polish each sentence to make it more smooth and more biblical.
 
     Output MUST be a valid JSON object with a single key 'refined_text' containing the refined content.
     Do NOT include any markdown formatting, preamble, or footer.
