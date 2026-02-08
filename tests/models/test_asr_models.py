@@ -122,6 +122,37 @@ def test_funasr_paraformer_zh(sample):
     assert score >= 0.8
 
 
+@pytest.mark.parametrize("sample", SAMPLES)
+def test_sensevoice_small(sample):
+    from funasr import AutoModel
+    print(f"\n🚀 Loading SenseVoiceSmall...")
+    funasr_root = os.path.expanduser("~/llm_models/funasr")
+    os.environ["MODELSCOPE_CACHE"] = funasr_root
+
+    start = time()
+    model = AutoModel(
+        model="iic/SenseVoiceSmall",
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        disable_update=True
+    )
+    print(f"✅ SenseVoiceSmall Model loaded in {time()-start:,.2f}s")
+
+    audio_path = sample['path']
+    expected = sample['transcript']
+    
+    if not os.path.exists(audio_path):
+        pytest.skip(f"Audio not found: {audio_path}")
+
+    print(f"🎙️ Transcribing with SenseVoiceSmall: {audio_path}")
+    res = model.generate(input=audio_path)
+    actual = res[0].get('text', '').strip()
+    print(f"📄 Result: {actual[:100]}...")
+
+    score = judge_asr_accuracy(expected, actual)
+    print(f"⭐️ Accuracy Score: {score:.2f}")
+    assert score >= 0.8
+
+
 def test_funasr_punc_ct():
     pass
 
