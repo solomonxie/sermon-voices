@@ -6,7 +6,7 @@ from glob import glob
 from time import time
 
 import torch
-from funasr import AutoModel
+from qwen_asr import Qwen3ASRModel
 
 from pydub import AudioSegment
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace
@@ -145,22 +145,24 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
 
 def get_asr_model():
     """
-    Lazy loader for Paraformer-large.
+    Lazy loader for Qwen3-ASR-1.7B via qwen-asr library.
     """
     global ASR_MODEL
     if ASR_MODEL is not None:
         return ASR_MODEL
 
-    print(f"🚀 Loading Paraformer-large (ASR)...")
-    funasr_root = os.path.expanduser("~/llm_models/funasr")
-    os.environ["MODELSCOPE_CACHE"] = funasr_root
+    print(f"🚀 Loading Qwen3-ASR-1.7B (ASR)...")
+    
+    huggingface_root = os.path.expanduser("~/llm_models/huggingface")
+    os.environ["HF_HOME"] = huggingface_root
 
     start = time()
-    ASR_MODEL = AutoModel(
-        model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        # punc_model="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        disable_update=True
+    ASR_MODEL = Qwen3ASRModel.from_pretrained(
+        "Qwen/Qwen3-ASR-1.7B",
+        dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto" if torch.cuda.is_available() else None,
+        max_inference_batch_size=8,
+        cache_dir=huggingface_root,
     )
     print(f"\tASR Model loaded in {time()-start:,.0f}s")
     return ASR_MODEL
@@ -170,12 +172,13 @@ PUNC_MODEL = None
 
 def get_punc_model():
     """
-    Lazy loader for ct-punc model.
+    Lazy loader for ct-punc model via FunASR.
     """
     global PUNC_MODEL
     if PUNC_MODEL is not None:
         return PUNC_MODEL
 
+    from funasr import AutoModel # Import only when needed to avoid conflicts
     print(f"🚀 Loading ct-punc (Punctuation)...")
     funasr_root = os.path.expanduser("~/llm_models/funasr")
     os.environ["MODELSCOPE_CACHE"] = funasr_root
@@ -192,12 +195,16 @@ def get_punc_model():
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using Paraformer-large.
+    Transcribes audio using Qwen3-ASR.
     """
     model = get_asr_model()
-    res = model.generate(input=audio_path)
-    if not res: return ""
-    return res[0].get('text', '').strip()
+    results = model.transcribe(
+        audio=audio_path,
+        language=None, # auto language detection
+    )
+    if not results: return ""
+    # Results is a list of entries, we join them if multiple (though usually one for short chunks)
+    return " ".join([entry.text for entry in results]).strip()
 
 
 def enhance_punctuation(text: str) -> str:
