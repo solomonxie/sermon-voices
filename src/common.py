@@ -92,3 +92,16 @@ def safe_remove(path: str):
     """ Safely removes a file if it exists. """
     if os.path.exists(path):
         os.remove(path)
+
+
+def safe_write(path: str, text: str):
+    """ Writes text to a file, ensuring the directory exists. Appends text. """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(text + "\n\n")
+
+
+def safe_replace(src_path: str, dest_path: str):
+    """ Safely replaces dest_path with src_path if src_path exists. """
+    if os.path.exists(src_path):
+        os.replace(src_path, dest_path)

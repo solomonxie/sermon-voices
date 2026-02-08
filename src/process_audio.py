@@ -9,7 +9,7 @@ import torch
 from funasr import AutoModel
 
 from pydub import AudioSegment
-from src.common import ask_llm, safe_remove, get_custom_instructions
+from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace
 from src.constants import OUTPUT_ROOT
 
 ASR_MODEL = None
@@ -24,40 +24,55 @@ def main() -> None:
     ]
 
     for metadata_path in sorted(metadata_files):
-        sermon_dir = os.path.dirname(metadata_path)
-        final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
+        process_sermon(metadata_path)
 
-        # Checkpoint: Skip if already processed
-        if os.path.exists(final_zh):
-            continue
 
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
+def process_sermon(metadata_path: str) -> None:
+    """
+    Processes a single sermon: Split -> Transcribe -> Refine -> Finalize.
+    """
+    sermon_dir = os.path.dirname(metadata_path)
+    audio_path = os.path.join(sermon_dir, 'original.mp3')
+    final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
 
-        print(f"\n⚙️ Processing: {metadata.get('title')} ({metadata_path})")
+    # Checkpoint: Skip if already processed or audio missing
+    if os.path.exists(final_zh) or not os.path.exists(audio_path):
+        return
 
-        # 1. Split audio into 1-min chunks with 10s overlap
-        chunk_paths = split_audio(metadata_path)
+    with open(metadata_path, 'r', encoding='utf-8') as f:
+        metadata = json.load(f)
 
-        # 2. Sequential processing
-        zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
+    print(f"\n⚙️ Processing: {metadata.get('title')} ({metadata_path})")
 
-        safe_remove(zh_tmp)
+    # 1. Split audio into 1-min chunks
+    chunk_paths = split_audio(metadata_path)
 
-        prev_context = ""
-        for chunk_path in chunk_paths:
-            try:
-                prev_context = process_chunk(chunk_path, prev_context=prev_context)
-            except Exception as e:
-                print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
-                prev_context = ""
+    # 2. Sequential processing
+    orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
+    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
+    zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
 
-        # 3. Finalize: move tmp to final
-        if os.path.exists(zh_tmp):
-            os.replace(zh_tmp, final_zh)
-            print(f"✅ Saved refined ZH transcript: {final_zh}")
+    safe_remove(orig_tmp)
+    safe_remove(punc_tmp)
+    safe_remove(zh_tmp)
 
-        print(f"✅ Audio processing complete: {metadata['title']}")
+    prev_context = ""
+    for chunk_path in chunk_paths:
+        try:
+            prev_context = process_chunk(chunk_path, prev_context=prev_context)
+        except Exception as e:
+            print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
+            prev_context = ""
+
+    # 3. Finalize: replace tmp with final and cleanup
+    safe_replace(zh_tmp, final_zh)
+    if os.path.exists(final_zh):
+        print(f"✅ Saved refined ZH transcript: {final_zh}")
+        # Cleanup intermediate steps
+        safe_remove(orig_tmp)
+        safe_remove(punc_tmp)
+
+    print(f"✅ Audio processing complete: {metadata['title']}")
 
 
 def split_audio(metadata_path: str) -> list[str]:
@@ -69,9 +84,6 @@ def split_audio(metadata_path: str) -> list[str]:
     audio_path = os.path.join(sermon_dir, 'original.mp3')
     chunks_dir = os.path.join(sermon_dir, 'chunks')
     os.makedirs(chunks_dir, exist_ok=True)
-
-    if not os.path.exists(audio_path):
-        return []
 
     print(f"🎙️ Splitting audio: {audio_path}")
     audio = AudioSegment.from_file(audio_path)
@@ -105,22 +117,29 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
     """
     print(f"🎙️ Reading chunk: {os.path.basename(audio_path)}")
     sermon_dir = os.path.dirname(os.path.dirname(audio_path))
-    zh_tmp_path = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-
+    orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
+    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
+    zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
+    
     # Load custom instructions for this preacher
-    # sermon_dir is output/<preacher>/<series>/<title>/
-    # so preacher_dir is 2 levels up from sermon_dir
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
     transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
+
     # 1. Transcribe
     text = transcribe_audio(audio_path)
-    if not text.strip(): return
+    if not text.strip(): return ""
+    
+    safe_write(orig_tmp, text)
+
     # 1.5 Enhance Punctuation
-    text = enhance_punctuation(text)
+    text_punc = enhance_punctuation(text)
+    safe_write(punc_tmp, text_punc)
+
     # 2. Refine (ZH)
-    refined_zh = refine_text(text, custom_instructions=transcript_instr, prev_context=prev_context)
-    with open(zh_tmp_path, 'a', encoding='utf-8') as f:
-        f.write(refined_zh + "\n\n")
+    refined_zh = refine_text(text_punc, custom_instructions=transcript_instr, prev_context=prev_context)
+    
+    safe_write(zh_tmp, refined_zh)
+            
     return refined_zh
 
 
