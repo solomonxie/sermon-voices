@@ -1,17 +1,19 @@
 import os
 import json
+import argparse
 from src.constants import OUTPUT_ROOT
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Phase 4: Document Generation (EN)")
+    parser.add_argument("metadata_path", help="Path to the metadata.json file to process")
+    args = parser.parse_args()
+
     print(f"\n--- Phase 4: Document Generation (EN) ---")
-    from glob import glob
-    metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
-    for metadata_path in sorted(metadata_files):
-        try:
-            process_en_documents(metadata_path)
-        except Exception as e:
-            print(f"❌ Error processing documents for {metadata_path}: {str(e)}")
+    try:
+        process_en_documents(args.metadata_path)
+    except Exception as e:
+        print(f"❌ Error processing documents for {args.metadata_path}: {str(e)}")
 
 
 def process_en_documents(metadata_path: str) -> None:

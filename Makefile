@@ -59,15 +59,15 @@ metadata:
 
 audio:
 	@echo "Running Phase 2: Audio Transcription & Refinement (Original Language)..."
-	@PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py
+	@find output -name original.mp3 -exec PYTHONPATH=. $(PYTHON_VENV) src/process_audio.py {} \;
 
 translation:
 	@echo "Running Phase 3: Translation & Text-to-Speech (ZH -> EN)..."
-	@PYTHONPATH=. $(PYTHON_VENV) src/process_translation.py
+	@find output -name metadata.json -exec PYTHONPATH=. $(PYTHON_VENV) src/process_translation.py {} \;
 
 pdf:
 	@echo "Running Phase 4: Document Generation (Markdown/LaTeX/PDF)..."
-	@PYTHONPATH=. $(PYTHON_VENV) src/process_pdf.py
+	@find output -name metadata.json -exec PYTHONPATH=. $(PYTHON_VENV) src/process_pdf.py {} \;
 
 
 check-deps:

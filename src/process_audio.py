@@ -1,6 +1,7 @@
 import os
 import json
 import math
+import argparse
 import tempfile
 from glob import glob
 from time import time
@@ -16,37 +17,29 @@ from src.constants import OUTPUT_ROOT
 ASR_MODEL = None
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement")
+    parser.add_argument("audio_path", help="Path to the original.mp3 file to process")
+    args = parser.parse_args()
+
     print(f"\n--- Phase 2: Audio Transcription & Refinement ---")
-    metadata_files = glob(os.path.join(OUTPUT_ROOT, '**/metadata.json'), recursive=True)
-    # debug---------- (optional: user had one break in draft)
-    metadata_files = [
-        'output/hua-xian/acts/001_do-not-leave-jerusalem/metadata.json',
-        'output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/metadata.json',
-    ]
-
-    for metadata_path in sorted(metadata_files):
-        process_sermon(metadata_path)
+    process_sermon(args.audio_path)
 
 
-def process_sermon(metadata_path: str) -> None:
+def process_sermon(audio_path: str) -> None:
     """
     Processes a single sermon: Split -> Transcribe -> Refine -> Finalize.
     """
-    sermon_dir = os.path.dirname(metadata_path)
-    audio_path = os.path.join(sermon_dir, 'original.mp3')
+    sermon_dir = os.path.dirname(audio_path)
     final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
 
     # Checkpoint: Skip if already processed or audio missing
     if os.path.exists(final_zh) or not os.path.exists(audio_path):
         return
 
-    with open(metadata_path, 'r', encoding='utf-8') as f:
-        metadata = json.load(f)
-
-    print(f"\n⚙️ Processing: {metadata.get('title')} ({metadata_path})")
+    print(f"\n⚙️ Processing: {audio_path}")
 
     # 1. Split audio into 1-min chunks
-    chunk_paths = split_audio(metadata_path)
+    chunk_paths = split_audio(audio_path)
 
     # 2. Sequential processing
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
@@ -63,7 +56,7 @@ def process_sermon(metadata_path: str) -> None:
             prev_context = process_chunk(chunk_path, prev_context=prev_context)
         except Exception as e:
             print(f"❌ Error processing chunk {chunk_path}: {str(e)}")
-            prev_context = ""
+            raise
 
     # 3. Finalize: replace tmp with final and cleanup
     safe_replace(zh_tmp, final_zh)
@@ -73,16 +66,15 @@ def process_sermon(metadata_path: str) -> None:
         safe_remove(orig_tmp)
         safe_remove(punc_tmp)
 
-    print(f"✅ Audio processing complete: {metadata['title']}")
+    print(f"✅ Audio processing complete: {audio_path}")
 
 
-def split_audio(metadata_path: str) -> list[str]:
+def split_audio(audio_path: str) -> list[str]:
     """
     Splits original.mp3 into 1-minute chunks with no overlap.
     Saves to a 'chunks/' subfolder.
     """
-    sermon_dir = os.path.dirname(metadata_path)
-    audio_path = os.path.join(sermon_dir, 'original.mp3')
+    sermon_dir = os.path.dirname(audio_path)
     chunks_dir = os.path.join(sermon_dir, 'chunks')
     os.makedirs(chunks_dir, exist_ok=True)
 
