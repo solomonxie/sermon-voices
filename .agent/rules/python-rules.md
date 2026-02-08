@@ -2,35 +2,28 @@
 trigger: always_on
 ---
 
-# 🐍 Python Development Rules
+# Python Development Rules
 
-Strict adherence to these rules ensures a robust and maintainable codebase for the **Sermon Voices** project.
+Strict adherence to these rules ensures a robust and maintainable codebase for the sermon-voices project.
 
-### 🌐 Environment & Execution
-> [!IMPORTANT]
-> - **Virtual Environment**: All operations **must** occur within the `venv/` directory.
-> - **Executables**: Always use specific paths:
->   - `venv/bin/python` for running scripts.
->   - `venv/bin/pip` for managing dependencies.
->   - `venv/bin/pytest` for testing.
-> - **Isolation**: Never install packages globally or use the system Python.
+## Environment & Execution
+- Virtual Environment: All operations must occur within the venv/ directory.
+- Executables: Always use specific paths like venv/bin/python for running scripts, venv/bin/pip for managing dependencies, and venv/bin/pytest for testing.
+- Isolation: Never install packages globally or use the system Python.
 
-### 📝 Coding Standards
-> [!TIP]
-> - **Type Hinting**: Mandatory for **all** function signatures (PEP 484).
->   - Use built-in types (e.g., `list[str]`, `dict[str, int]`) instead of `typing` imports where possible (Python 3.12+).
-> - **Docstrings**: Provide Google-style docstrings for complex functions and classes.
-> - **Naming**: Follow PEP 8 (snake_case for variables/functions, PascalCase for classes).
-> - **Order**: Order functions/classes in an order of reading, e.g., main() at top, then the definition function called by main(), then the other functions called by above function...;
-> - **Import**: Keep the import oder as: builtin lib at top in a length ascending order (import os is the shortet, so at top), then leave a blank line, keep project module imports, then a blank line, keep 3rd party lib imports. Then a blank line, global variables definition; Then it's the main() or core function of the module.
-> - **Exception**: Try to use try-catch block as less as possible, if use, only use it at higher level. If higher level already has a try-catch block, then everything inside should not have another try-catch. The main goal of try catch is to prevent for-loop break or whole workflow break. If not for this purpose, try not to use try catch and just let errors expose.
-> - **Parameter**: function parameters should be as less as possible, if there're more than 5 arguments it means it's highly coupled. Try to make up the value within the function where it uses instead of passing from outside as parameter.
+## Coding Standards
+- Type Hinting: Mandatory for all function signatures (PEP 484). Use built-in types (e.g., list[str], dict[str, int]) instead of typing imports where possible.
+- Docstrings: Provide Google-style docstrings for complex functions and classes.
+- Naming: Follow PEP 8 (snake_case for variables/functions, PascalCase for classes).
+- Order: Order functions/classes in an order of reading, e.g., main() at top, then the definition function called by main(), then the other functions called by above function.
+- Import: Keep the import order as: builtin lib at top in a length ascending order, then a blank line, project module imports, then a blank line, 3rd party lib imports. Then a blank line, global variables definition. Then the main() or core function of the module.
+- Exception: Use try-catch blocks as little as possible. The main goal is to prevent flow breaks. If not for this purpose, avoid them and let errors expose.
+- Parameter: Keep function parameters to a minimum. If there are more than 5 arguments, it means it's highly coupled. Try to derive values within the function where used.
 
-### 🛠️ Conflict Prevention
-> [!CAUTION]
-> - **Built-ins**: Never name variables, functions, or modules after Python built-in names (e.g., `id`, `type`, `input`, `file`, `json`). This prevents shadowing and subtle bugs.
-> - **Global State**: Avoid global variables; use constants or configuration objects.
+## Conflict Prevention
+- Built-ins: Never name variables, functions, or modules after Python built-in names (e.g., id, type, input, file, json).
+- Global State: Avoid global variables; use constants or configuration objects.
 
-### 🧪 Quality Assurance
-- **Tests**: Every new feature or bug fix must include corresponding unit tests in `tests/`.
-- **Linting**: Ensure code is clean and passes basic syntax checks before committing.
+## Quality Assurance
+- Tests: Every new feature or bug fix must include corresponding unit tests in tests/.
+- Linting: Ensure code is clean and passes basic syntax checks before committing.
