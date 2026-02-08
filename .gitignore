@@ -7,3 +7,4 @@ output/*
 *.pyc
 venv/*
 models/*
+.pytest_cache/*
