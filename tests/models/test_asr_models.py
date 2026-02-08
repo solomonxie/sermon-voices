@@ -1,12 +1,14 @@
 import pytest
 import os
 import json
+import gc
 import torch
 from time import time
 from qwen_asr import Qwen3ASRModel
 from src.common import ask_llm
 
 JUDGE_MODEL = 'qwen3'
+
 
 # Pass these samples to tests using @pytest.mark.parametrize
 SAMPLES = [
@@ -50,19 +52,38 @@ def judge_asr_accuracy(expected: str, actual: str) -> float:
 
 @pytest.mark.parametrize("sample", SAMPLES)
 def test_qwen3_asr(sample):
-    print(f"\n🚀 Loading Qwen3-ASR-1.7B...")
-    huggingface_root = os.path.expanduser("~/llm_models/huggingface")
-    os.environ["HF_HOME"] = huggingface_root
-    
-    start = time()
-    model = Qwen3ASRModel.from_pretrained(
-        "Qwen/Qwen3-ASR-1.7B",
-        dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-        cache_dir=huggingface_root,
-    )
-    print(f"✅ ASR Model loaded in {time()-start:,.2f}s")
+    global QWEN3_ASR_MODEL
+    if QWEN3_ASR_MODEL is None:
+        print(f"\n🚀 Loading Qwen3-ASR-1.7B...")
+        huggingface_root = os.path.expanduser("~/llm_models/huggingface")
+        os.environ["HF_HOME"] = huggingface_root
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.7"
+        os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.5"
+        
+        # Device and dtype optimization for Mac/MPS, CUDA, or CPU
+        if torch.backends.mps.is_available():
+            device_map = "mps"
+            dtype = torch.float16
+        elif torch.cuda.is_available():
+            device_map = "auto"
+            dtype = torch.bfloat16
+        else:
+            device_map = None
+            dtype = torch.float32
 
+        QWEN3_ASR_MODEL = Qwen3ASRModel.from_pretrained(
+            "Qwen/Qwen3-ASR-1.7B",
+            dtype=dtype,
+            device_map=device_map,
+            max_inference_batch_size=1,
+            cache_dir=huggingface_root,
+        )
+        # Suppress "Setting `pad_token_id` to `eos_token_id`" warning
+        if QWEN3_ASR_MODEL.model.config.pad_token_id is None:
+            QWEN3_ASR_MODEL.model.config.pad_token_id = QWEN3_ASR_MODEL.model.config.eos_token_id
+
+    model = QWEN3_ASR_MODEL
     audio_path = sample['path']
     expected = sample['transcript']
 
@@ -72,6 +93,12 @@ def test_qwen3_asr(sample):
     print(f"🎙️ Transcribing: {audio_path}")
     results = model.transcribe(audio=audio_path)
     actual = " ".join([entry.text for entry in results]).strip()
+    
+    # Cleanup memory
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.collect()
+
     print(f"📄 Result: {actual[:100]}...")
 
     score = judge_asr_accuracy(expected, actual)
@@ -107,3 +134,7 @@ def test_funasr_paraformer_zh(sample):
     score = judge_asr_accuracy(expected, actual)
     print(f"⭐️ Accuracy Score: {score:.2f}")
     assert score >= 0.8
+
+
+def test_funasr_punc_ct():
+    pass

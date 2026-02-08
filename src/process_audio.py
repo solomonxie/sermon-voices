@@ -5,6 +5,7 @@ import tempfile
 from glob import glob
 from time import time
 
+import gc
 import torch
 from qwen_asr import Qwen3ASRModel
 
@@ -143,28 +144,58 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
     return refined_zh
 
 
-def get_asr_model():
+def get_asr_model(force_cpu: bool = False):
     """
     Lazy loader for Qwen3-ASR-1.7B via qwen-asr library.
     """
     global ASR_MODEL
     if ASR_MODEL is not None:
-        return ASR_MODEL
+        # If we already have a model and it's on the wrong device, we'd need to reload. 
+        # But for now, we assume once it's on CPU it stays there if forced.
+        if force_cpu and next(ASR_MODEL.model.parameters()).device.type != 'cpu':
+             ASR_MODEL = None
+        else:
+            return ASR_MODEL
 
     print(f"🚀 Loading Qwen3-ASR-1.7B (ASR)...")
     
     huggingface_root = os.path.expanduser("~/llm_models/huggingface")
     os.environ["HF_HOME"] = huggingface_root
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    
+    # Optimization for MPS memory pressure: Set both Low and High to avoid "invalid ratio" errors
+    # Low must be <= High. Default low is often 1.4, so setting high to 0.7 triggers error.
+    os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.7"
+    os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.5"
 
     start = time()
+    
+    # Device and dtype optimization for Mac/MPS, CUDA, or CPU
+    if torch.backends.mps.is_available() and not force_cpu:
+        print(f"\tUsing Apple Silicon (MPS) acceleration")
+        device_map = "mps"
+        dtype = torch.float16
+    elif torch.cuda.is_available() and not force_cpu:
+        print(f"\tUsing CUDA acceleration")
+        device_map = "auto"
+        dtype = torch.bfloat16
+    else:
+        print(f"\tUsing CPU (Slow but Stable)")
+        device_map = None
+        dtype = torch.float32
+
     ASR_MODEL = Qwen3ASRModel.from_pretrained(
         "Qwen/Qwen3-ASR-1.7B",
-        dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-        max_inference_batch_size=8,
+        dtype=dtype,
+        device_map=device_map,
+        max_inference_batch_size=1, # Reduced for memory stability
         cache_dir=huggingface_root,
     )
+    
+    # Suppress "Setting `pad_token_id` to `eos_token_id`" warning
+    if ASR_MODEL.model.config.pad_token_id is None:
+        ASR_MODEL.model.config.pad_token_id = ASR_MODEL.model.config.eos_token_id
+
     print(f"\tASR Model loaded in {time()-start:,.0f}s")
     return ASR_MODEL
 
@@ -196,16 +227,31 @@ def get_punc_model():
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using Qwen3-ASR.
+    Transcribes audio using Qwen3-ASR with memory safety and fallbacks.
     """
-    model = get_asr_model()
-    results = model.transcribe(
-        audio=audio_path,
-        language=None, # auto language detection
-    )
-    if not results: return ""
-    # Results is a list of entries, we join them if multiple (though usually one for short chunks)
-    return " ".join([entry.text for entry in results]).strip()
+    try:
+        model = get_asr_model()
+        results = model.transcribe(
+            audio=audio_path,
+            language=None, # auto language detection
+        )
+        
+        # Immediate cleanup for MPS stability
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        gc.collect()
+
+        if not results: return ""
+        return " ".join([entry.text for entry in results]).strip()
+    except Exception as e:
+        # Check if it's a memory or backend error
+        err_msg = str(e)
+        if any(kw in err_msg for kw in ["MPS", "Memory", "buffer", "command buffer"]):
+            print(f"⚠️ ASR Backend Error: {err_msg}. Falling back to CPU...")
+            model = get_asr_model(force_cpu=True)
+            results = model.transcribe(audio=audio_path, language=None)
+            return " ".join([entry.text for entry in results]).strip()
+        raise e
 
 
 def enhance_punctuation(text: str) -> str:
