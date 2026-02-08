@@ -155,6 +155,7 @@ def get_asr_model():
     
     huggingface_root = os.path.expanduser("~/llm_models/huggingface")
     os.environ["HF_HOME"] = huggingface_root
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
     start = time()
     ASR_MODEL = Qwen3ASRModel.from_pretrained(
