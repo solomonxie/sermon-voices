@@ -11,11 +11,10 @@ import gc
 import torch
 from pydub import AudioSegment
 
-from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace
+from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity
 from src.constants import OUTPUT_ROOT
 
 ASR_MODEL = None
-PUNC_MODEL = None
 
 
 def main() -> None:
@@ -113,30 +112,43 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
     punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
     errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-
     # Load custom instructions for this preacher
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
     transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
-
     # 1. Transcribe
     text = transcribe_audio(audio_path)
     if not text.strip(): return ""
-
     safe_write(orig_tmp, text)
+    # 1.6 & 2. Iterative Refinement (until no more errors found or max loops reached)
+    refined_zh = text
+    ralph_wiggum_loops = 5
+    for i in range(ralph_wiggum_loops):
+        print(f"🔄 Ralph Wiggum correction loop {i+1}/{ralph_wiggum_loops}...")
+        errors = pick_zh_errors(refined_zh)
+        # Write latest errors to tmp for inspection
+        safe_write(errors_tmp, f'Errors ({i=}):\n' + errors)
+        if not errors.strip():
+            print("✨ No more errors found.")
+        extra_context = """
+            --- START CUSTOM INSTRUCTIONS ---
+            {custom_instructions}
+            --- END CUSTOM INSTRUCTIONS ---
+            --- START PREVIOUS CONTEXT ---
+            {prev_context}
+            --- END PREVIOUS CONTEXT ---
+            --- START IDENTIFIED ERRORS ---
+            {errors}
+            --- END IDENTIFIED ERRORS ---
+        """
+        last_text = refined_zh
+        refined_zh = refine_text(refined_zh, extra_context=extra_context)
 
-    # 1.5 Enhance Punctuation
-    text_punc = enhance_punctuation(text)
-    safe_write(punc_tmp, text_punc)
-
-    # 1.6 Pick Errors
-    error_list = pick_zh_errors(text_punc, custom_instructions=transcript_instr)
-    safe_write(errors_tmp, error_list)
-
-    # 2. Refine (ZH)
-    refined_zh = refine_text(text_punc, custom_instructions=transcript_instr, prev_context=prev_context, error_list=error_list)
-
+        # Break if the LLM made negligible changes (99% similarity)
+        similarity = string_similarity(refined_zh, last_text)
+        if similarity >= 0.99:
+            print(f"⏹️ Text stabilized ({similarity:.1%} similarity), finishing loop.")
+            break
     safe_write(zh_tmp, refined_zh)
-
     return refined_zh
 
 
@@ -160,24 +172,14 @@ def transcribe_audio(audio_path: str) -> str:
     return text.strip()
 
 
-def enhance_punctuation(text: str) -> str:
-    """
-    Enhances punctuation of a text segment using ct-punc.
-    """
-    print(f"💉 Enhancing punctuation...")
-    model = get_punc_model()
-    res = model.generate(input=text)
-    return res[0].get('text', text).strip()
-
-
-def pick_zh_errors(text: str, custom_instructions: str = "") -> str:
+def pick_zh_errors(text: str) -> str:
     """
     Identifies errors in the transcript (grammar, biblical facts, stammers).
     Returns a bulleted list of errors.
     """
     print(f"🔍 Picking errors from transcript...")
     prompt = f"""
-    You are an expert editor for Chinese sermon transcripts. 
+    You are an expert editor for Chinese sermon transcripts.
     Analyze the following punctuated transcript text and identify ANY errors.
 
     ERROR CATEGORIES TO FIND:
@@ -187,8 +189,7 @@ def pick_zh_errors(text: str, custom_instructions: str = "") -> str:
     - Stammers and Fillers: Repetitive words from hesitations (e.g., "这这个这个", "还有还有", "呃", "嗯", "啊", "呢") that should be flagged.
     - Punctuation Errors: Missing or incorrect punctuation that affects meaning.
     - Biblical name errors: Madarin sermon is based off CUV Bible, so biblical name should match CUV Bible names.
-
-    {custom_instructions}
+    - Context: You need to check the whole paragraph for context to determine if there are errors.
 
     Transcript to analyze:
     {text}
@@ -202,21 +203,11 @@ def pick_zh_errors(text: str, custom_instructions: str = "") -> str:
     return "\n".join(errors)
 
 
-def refine_text(text: str, custom_instructions: str = "", prev_context: str = "", error_list: str = "") -> str:
+def refine_text(text: str, extra_context: str) -> str:
     """
     Refines Chinese transcript for biblical accuracy and punctuation.
     """
     print(f"✍️ Refining ZH text segment...")
-
-    context_prefix = f"Extra instructions:\n{custom_instructions}\n"
-    if prev_context.strip():
-        # Only take the last bit of the previous context to avoid bloating the prompt
-        context_tail = prev_context[-300:] if len(prev_context) > 300 else prev_context
-        context_prefix += f"\nPREVIOUS CONTEXT (for natural flow only):\n...{context_tail}\n--- END PREVIOUS CONTEXT ---\n"
-
-    if error_list.strip():
-        context_prefix += f"\nIDENTIFIED ERRORS TO FIX:\n{error_list}\n--- END ERRORS ---\n"
-
     prompt = f"""
     You are refining a Chinese sermon transcript. Your PRIMARY goal is to PRESERVE the original speaker's exact words and speaking style.
 
@@ -236,7 +227,7 @@ def refine_text(text: str, custom_instructions: str = "", prev_context: str = ""
     - Repeat: If the speaker stammers, repeat the word or phrase, remove it. e.g., "其他地方还还有没有难点" → "其他地方还有没有难点"; "这这个这个" → "这个"
     - Fillers: Remove all spoken fillers and hesitation markers. e.g., '呃', '嗯', '那个', '就是', '啊', '呢' as fillers.
 
-    {context_prefix}
+    {extra_context}
 
     Original transcript (PRESERVE the speaker's exact words):
     {text}
@@ -252,22 +243,9 @@ def get_asr_model():
     if ASR_MODEL is not None:
         return ASR_MODEL
     from funasr import AutoModel
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "mps"  # 'mps' if torch.backends.mps.is_available() else "cpu"
     model = AutoModel(
         model="iic/SenseVoiceSmall",
-        device=device,
-        disable_update=True
-    )
-    return model
-
-
-def get_punc_model():
-    if PUNC_MODEL is not None:
-        return PUNC_MODEL
-    from funasr import AutoModel
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    model = AutoModel(
-        model="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
         device=device,
         disable_update=True
     )
