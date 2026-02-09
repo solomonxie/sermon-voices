@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import math
 import argparse
@@ -149,12 +150,14 @@ def transcribe_audio(audio_path: str) -> str:
     if os.path.exists(hotwords_path):
         with open(hotwords_path, 'r', encoding='utf-8') as f:
             hotwords = " ".join([line.strip() for line in f if line.strip()])
-    # FunASR AutoModel API with hotwords
+    # FunASR AutoModel API with hotwords and ITN (Inverse Text Normalization)
     model = get_asr_model()
-    results = model.generate(input=audio_path, hotword=hotwords)
+    results = model.generate(input=audio_path, hotword=hotwords, use_itn=True)
     if not results: return ""
-    # Extract text from results
-    return results[0].get('text', '').strip()
+    # Extract text from results and strip ASR event tags (e.g., <|zh|><|NEUTRAL|>)
+    text = results[0].get('text', '').strip()
+    text = re.sub(r'<\|.*?\|>', '', text)
+    return text.strip()
 
 
 def enhance_punctuation(text: str) -> str:
