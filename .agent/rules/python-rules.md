@@ -6,10 +6,12 @@ trigger: always_on
 
 Strict adherence to these rules ensures a robust and maintainable codebase for the sermon-voices project.
 
-## Environment & Execution
-- Virtual Environment: All operations must occur within the venv/ directory.
-- Executables: Always use specific paths like venv/bin/python for running scripts, venv/bin/pip for managing dependencies, and venv/bin/pytest for testing.
-- Isolation: Never install packages globally or use the system Python.
+## Styling
+- Try not to have more blank lines, should be compact
+- Don't ever define a function inside a function
+- Use less variables if possible
+- Follow `Zen of Python` rules
+- Follow Google python style rules
 
 ## Coding Standards
 - Type Hinting: Mandatory for all function signatures (PEP 484). Use built-in types (e.g., list[str], dict[str, int]) instead of typing imports where possible.
@@ -28,6 +30,13 @@ Strict adherence to these rules ensures a robust and maintainable codebase for t
 ## Quality Assurance
 - Tests: Every new feature or bug fix must include corresponding unit tests in tests/.
 - Linting: Ensure code is clean and passes basic syntax checks before committing.
+
+
+## Environment & Execution
+- Virtual Environment: All operations must occur within the venv/ directory.
+- Executables: Always use specific paths like venv/bin/python for running scripts, venv/bin/pip for managing dependencies, and venv/bin/pytest for testing.
+- Isolation: Never install packages globally or use the system Python.
+
 
 
 ## Testing
