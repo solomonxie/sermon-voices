@@ -11,7 +11,7 @@ import gc
 import torch
 from pydub import AudioSegment
 
-from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity
+from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
 from src.constants import OUTPUT_ROOT
 
 ASR_MODEL = None
@@ -100,7 +100,7 @@ def split_audio(audio_path: str) -> list[str]:
 
     return sorted(chunk_paths)
 
-
+@retry(retries=3, delay=5.0)
 def process_chunk(audio_path: str, prev_context: str = "") -> str:
     """
     Processes a single audio chunk: Transcribe -> Refine -> Append.
@@ -145,7 +145,7 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
 
         # Break if the LLM made negligible changes (99% similarity)
         similarity = string_similarity(refined_zh, last_text)
-        if similarity >= 0.99:
+        if similarity >= 0.999:
             print(f"⏹️ Text stabilized ({similarity:.1%} similarity), finishing loop.")
             break
     safe_write(zh_tmp, refined_zh)
@@ -190,6 +190,7 @@ def pick_zh_errors(text: str) -> str:
     - Punctuation Errors: Missing or incorrect punctuation that affects meaning.
     - Biblical name errors: Madarin sermon is based off CUV Bible, so biblical name should match CUV Bible names.
     - Context: You need to check the whole paragraph for context to determine if there are errors.
+    - Suggestion: You can also provide suggestion of fix of each error based on the context.
 
     Transcript to analyze:
     {text}

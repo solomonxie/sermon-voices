@@ -3,7 +3,7 @@ import json
 import argparse
 from glob import glob
 from pydub import AudioSegment
-from src.common import ask_llm, get_custom_instructions
+from src.common import ask_llm, get_custom_instructions, retry
 from src.constants import OUTPUT_ROOT
 
 def main() -> None:
@@ -116,6 +116,7 @@ def process_tts(metadata_path: str, full_text: str) -> None:
     print(f"✅ TTS generation complete: {audio_en_path}")
 
 
+@retry(retries=3, delay=10.0)
 def text_to_speech_segmented(text: str, speaker_wav: str, output_path: str) -> None:
     """ Splits text into chunks and generates concatenated TTS audio. """
     print(f"🗣️ Generating Cloned Voice TTS (XTTS v2) with segmentation...")
