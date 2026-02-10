@@ -55,9 +55,8 @@ def process_sermon(audio_path: str) -> None:
     safe_remove(errors_tmp)
     safe_remove(zh_tmp)
 
-    prev_context = ""
     for chunk_path in chunk_paths:
-        prev_context = process_chunk(chunk_path, prev_context=prev_context)
+        process_chunk(chunk_path)
 
     # 3. Finalize: replace tmp with final and cleanup
     safe_replace(zh_tmp, final_zh)
@@ -101,7 +100,7 @@ def split_audio(audio_path: str) -> list[str]:
     return sorted(chunk_paths)
 
 @retry(retries=3, delay=5.0)
-def process_chunk(audio_path: str, prev_context: str = "") -> str:
+def process_chunk(audio_path: str) -> str:
     """
     Processes a single audio chunk: Transcribe -> Refine -> Append.
     Returns the refined ZH text to be used as context for the next chunk.
@@ -129,13 +128,10 @@ def process_chunk(audio_path: str, prev_context: str = "") -> str:
         safe_write(errors_tmp, f'Errors ({i=}):\n' + errors)
         if not errors.strip():
             print("✨ No more errors found.")
-        extra_context = """
+        extra_context = f"""
             --- START CUSTOM INSTRUCTIONS ---
-            {custom_instructions}
+            {transcript_instr}
             --- END CUSTOM INSTRUCTIONS ---
-            --- START PREVIOUS CONTEXT ---
-            {prev_context}
-            --- END PREVIOUS CONTEXT ---
             --- START IDENTIFIED ERRORS ---
             {errors}
             --- END IDENTIFIED ERRORS ---
@@ -191,6 +187,11 @@ def pick_zh_errors(text: str) -> str:
     - Biblical name errors: Madarin sermon is based off CUV Bible, so biblical name should match CUV Bible names.
     - Context: You need to check the whole paragraph for context to determine if there are errors.
     - Suggestion: You can also provide suggestion of fix of each error based on the context.
+    - Non-sense words: if a word makes no sense in the context and can't find possible correction, it could be transcription or chunking issue, should suggest to remove instead.
+    - Incomplete sentences: if a sentence is incomplete and can't find possible correction, should suggest to remove instead.
+    - While giving suggestions, should refer the whole sentence.
+    - Pick an error but don't change the meaning.
+    - The error description should be in mandarin as well.
 
     Transcript to analyze:
     {text}
@@ -224,7 +225,6 @@ def refine_text(text: str, extra_context: str) -> str:
     - Biblical terms: Correct to Chinese Union Version standard (彼得, 保罗, 耶路撒冷, 使徒行传, etc.)
     - Obvious ASR errors: Fix characters that clearly dont make sense (e.g., 耶鲁撒冷 → 耶路撒冷)
     - Paragraph breaks: Separate into logical paragraphs for readability
-    - Flow: Ensure smooth transition from previous context (do NOT repeat previous content)
     - Repeat: If the speaker stammers, repeat the word or phrase, remove it. e.g., "其他地方还还有没有难点" → "其他地方还有没有难点"; "这这个这个" → "这个"
     - Fillers: Remove all spoken fillers and hesitation markers. e.g., '呃', '嗯', '那个', '就是', '啊', '呢' as fillers.
 
@@ -244,10 +244,9 @@ def get_asr_model():
     if ASR_MODEL is not None:
         return ASR_MODEL
     from funasr import AutoModel
-    device = "mps"  # 'mps' if torch.backends.mps.is_available() else "cpu"
     model = AutoModel(
         model="iic/SenseVoiceSmall",
-        device=device,
+        device="mps",  # 'mps' if torch.backends.mps.is_available() else "cpu"
         disable_update=True
     )
     return model
