@@ -59,6 +59,9 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
     if match:
         content = match.group(0)
 
+    # Some LLMs use full-width quotes (”) which break standard json.loads
+    content = content.replace('“', '"').replace('”', '"')
+
     try:
         return json.loads(content)
     except Exception as e:

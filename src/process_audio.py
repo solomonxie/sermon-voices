@@ -65,70 +65,66 @@ def process_sermon(audio_path: str) -> None:
 
 
 def split_audio(audio_path: str) -> list[str]:
-    """
-    Splits original.mp3 into 30-second chunks with no overlap.
-    Saves to a 'chunks/' subfolder as MP3 (16kHz, mono).
-    """
     sermon_dir = os.path.dirname(audio_path)
     chunks_dir = os.path.join(sermon_dir, 'chunks')
     os.makedirs(chunks_dir, exist_ok=True)
-
-    print(f"🎙️ Splitting audio: {audio_path}")
+    print(f"🎙️ Splitting audio using VAD: {audio_path}")
+    from funasr import AutoModel
+    vad_model = AutoModel(
+        model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+        device="mps",  # if torch.backends.mps.is_available() else "cpu",
+        disable_update=True
+    )
+    res = vad_model.generate(
+        input=audio_path,
+        max_end_silence_time=500,
+        max_single_segment_time=60000,
+    )
     audio = AudioSegment.from_file(audio_path)
+    for chunk_idx, seg in enumerate(res[0]['value']):  # [[start, end], ...] in ms
+        start_ms, end_ms = seg
+        path = os.path.join(chunks_dir, f"chunk_{chunk_idx:03d}.mp3")
+        chunk = audio[start_ms:end_ms]
+        chunk = chunk.set_frame_rate(16000).set_channels(1)
+        chunk.export(path, format="mp3", codec="libmp3lame")
+    return sorted(glob(os.path.join(chunks_dir, "chunk_*.mp3")))
 
-    total_ms = len(audio)
-    chunk_ms = 60 * 1000  # 1 minute
-    overlap_ms = 5 * 1000 # 5 seconds overlap
-
-    chunk_paths = []
-    # Step through with precisely chunk_ms intervals
-    for i, start_ms in enumerate(range(0, total_ms, chunk_ms)):
-        end_ms = min(start_ms + chunk_ms, total_ms)
-        chunk_name = f"chunk_{i:03d}.mp3"
-        cp = os.path.join(chunks_dir, chunk_name)
-
-        # Only export if doesn't exist to save time
-        if not os.path.exists(cp):
-            chunk = audio[start_ms:end_ms]
-            # Qwen3-ASR works with 16kHz mono PCM
-            chunk = chunk.set_frame_rate(16000).set_channels(1)
-            chunk.export(cp, format="mp3", codec="libmp3lame")
-
-        chunk_paths.append(cp)
-        if end_ms >= total_ms: break
-
-    return sorted(chunk_paths)
 
 @retry(retries=3, delay=5.0)
 def process_chunk(audio_path: str) -> str:
-    """
-    Processes a single audio chunk: Transcribe -> Refine -> Append.
-    Returns the refined ZH text to be used as context for the next chunk.
-    """
     print(f"🎙️ Reading chunk: {os.path.basename(audio_path)}")
     sermon_dir = os.path.dirname(os.path.dirname(audio_path))
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
-    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
     errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-    # Load custom instructions for this preacher
+    
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
     transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
+    
     # 1. Transcribe
     text = transcribe_audio(audio_path)
     if not text.strip(): return ""
     safe_write(orig_tmp, text)
-    # 1.6 & 2. Iterative Refinement (until no more errors found or max loops reached)
+    
+    # 2. Bible Verse Lookup
+    bible_context = lookup_bible_verses(text)
+    
+    # 3. Iterative Refinement
     refined_zh = text
     ralph_wiggum_loops = 5
     for i in range(ralph_wiggum_loops):
         print(f"🔄 Ralph Wiggum correction loop {i+1}/{ralph_wiggum_loops}...")
         errors = pick_zh_errors(refined_zh)
-        # Write latest errors to tmp for inspection
         safe_write(errors_tmp, f'Errors ({i=}):\n' + errors)
+        
         if not errors.strip():
             print("✨ No more errors found.")
+            break
+            
         extra_context = f"""
+            --- START BIBLE VERSE REFERENCE (CUV) ---
+            {bible_context}
+            --- END BIBLE VERSE REFERENCE ---
             --- START CUSTOM INSTRUCTIONS ---
             {transcript_instr}
             --- END CUSTOM INSTRUCTIONS ---
@@ -139,13 +135,37 @@ def process_chunk(audio_path: str) -> str:
         last_text = refined_zh
         refined_zh = refine_text(refined_zh, extra_context=extra_context)
 
-        # Break if the LLM made negligible changes (99% similarity)
         similarity = string_similarity(refined_zh, last_text)
         if similarity >= 0.999:
             print(f"⏹️ Text stabilized ({similarity:.1%} similarity), finishing loop.")
             break
+            
     safe_write(zh_tmp, refined_zh)
     return refined_zh
+
+
+def lookup_bible_verses(text: str) -> str:
+    """
+    Identifies related CUV Bible verses based on the transcription.
+    """
+    print(f"📖 Looking up related Bible verses...")
+    prompt = f"""
+    Based on the following sermon transcription segment, identify any related Bible verses (Chinese Union Version - CUV).
+    For each sentence or idea, find the most likely verse it is referencing or quoting.
+    
+    Output the verses in the following format:
+    - [Book Name] [Chapter]:[Verse] - [Full Verse Text in CUV]
+    
+    Transcription:
+    {text}
+    
+    Output MUST be a JSON object: {{"verses": ["Verse 1 reference - text", "Verse 2 reference - text", ...]}}
+    If no clear verses are found, return {{"verses": []}}.
+    Do NOT include markdown, preamble, or explanations.
+    """
+    data = ask_llm(prompt, num_ctx=10240)
+    verses = data.get('verses', [])
+    return "\n".join(verses)
 
 
 def transcribe_audio(audio_path: str) -> str:
@@ -171,34 +191,21 @@ def transcribe_audio(audio_path: str) -> str:
 def pick_zh_errors(text: str) -> str:
     """
     Identifies errors in the transcript (grammar, biblical facts, stammers).
-    Returns a bulleted list of errors.
     """
     print(f"🔍 Picking errors from transcript...")
     prompt = f"""
-    You are an expert editor for Chinese sermon transcripts.
-    Analyze the following punctuated transcript text and identify ANY errors.
+    Analyze the Chinese sermon transcript and identify errors. Be concise.
 
-    ERROR CATEGORIES TO FIND:
-    - Grammarly Errors (Mandarin): Incorrect grammar, unnatural phrasing, or wrong word choices.
-    - Sentence Errors: Incomplete sentences, run-on sentences, or structural issues.
-    - Biblical Fact Errors: Incorrect Bible book names, figure names, place names, or verse numbers.
-    - Stammers and Fillers: Repetitive words from hesitations (e.g., "这这个这个", "还有还有", "呃", "嗯", "啊", "呢") that should be flagged.
-    - Punctuation Errors: Missing or incorrect punctuation that affects meaning.
-    - Biblical name errors: Madarin sermon is based off CUV Bible, so biblical name should match CUV Bible names.
-    - Context: You need to check the whole paragraph for context to determine if there are errors.
-    - Suggestion: You can also provide suggestion of fix of each error based on the context.
-    - Non-sense words: if a word makes no sense in the context and can't find possible correction, it could be transcription or chunking issue, should suggest to remove instead.
-    - Incomplete sentences: if a sentence is incomplete and can't find possible correction, should suggest to remove instead.
-    - While giving suggestions, should refer the whole sentence.
-    - Pick an error but don't change the meaning.
-    - The error description should be in mandarin as well.
+    ERROR CATEGORIES:
+    - Grammar/Phrasing: Unnatural Mandarin or wrong words.
+    - Biblical Facts: Book names, figures, places, or verse numbers (match CUV).
+    - Fillers/Stammers: "这个这个", "呃", "嗯", "啊".
+    - Sense: Non-sense words or incomplete sentences.
 
-    Transcript to analyze:
+    Transcript:
     {text}
 
-    Output MUST be a bulleted list of identified errors in JSON format: {{"errors": ["- Error 1", "- Error 2", ...]}}
-    If no errors are found, return {{"errors": []}}.
-    Do NOT include markdown, preamble, or explanations.
+    Output JSON: {{"errors": ["- Error with suggestion", ...]}}
     """
     data = ask_llm(prompt, num_ctx=10240)
     errors = data.get('errors', [])
@@ -211,30 +218,21 @@ def refine_text(text: str, extra_context: str) -> str:
     """
     print(f"✍️ Refining ZH text segment...")
     prompt = f"""
-    You are refining a Chinese sermon transcript. Your PRIMARY goal is to PRESERVE the original speaker's exact words and speaking style.
-
-    CRITICAL RULES - DO NOT VIOLATE:
-    1. PRESERVE ORIGINAL WORDING: Do NOT rephrase, rewrite, or paraphrase unless there is an obvious transcription error
-    2. KEEP REPETITIONS: Preachers intentionally repeat for emphasis - do NOT remove repetitions
-    3. KEEP SPEAKER'S STYLE: Maintain informal language, colloquialisms, and the speaker's unique voice
-    4. DO NOT SUMMARIZE: This is a transcript, not a summary - keep ALL content
-    5. DO NOT ADD CONTENT: Do not add explanations, interpretations, or theological commentary
-
-    WHAT YOU SHOULD FIX (ONLY):
-    - Punctuation: Add periods, commas, question marks for readability
-    - Biblical terms: Correct to Chinese Union Version standard (彼得, 保罗, 耶路撒冷, 使徒行传, etc.)
-    - Obvious ASR errors: Fix characters that clearly dont make sense (e.g., 耶鲁撒冷 → 耶路撒冷)
-    - Paragraph breaks: Separate into logical paragraphs for readability
-    - Repeat: If the speaker stammers, repeat the word or phrase, remove it. e.g., "其他地方还还有没有难点" → "其他地方还有没有难点"; "这这个这个" → "这个"
-    - Fillers: Remove all spoken fillers and hesitation markers. e.g., '呃', '嗯', '那个', '就是', '啊', '呢' as fillers.
+    Refine the Chinese sermon transcript.
+    
+    PRIMARY RULES:
+    1. PRESERVE ORIGINAL WORDING & STYLE. Do NOT paraphrase.
+    2. CORRECT biblical terms/names to CUV standard.
+    3. Use the provided BIBLE VERSE REFERENCE as a baseline for accuracy.
+    4. Fix punctuation and obvious ASR errors.
+    5. Remove stammers and fillers (呃, 嗯, 那个).
 
     {extra_context}
 
-    Original transcript (PRESERVE the speaker's exact words):
+    Original transcript:
     {text}
 
-    Output MUST be valid JSON: {{"refined_text": "..."}}
-    Do NOT include markdown, preamble, or explanations.
+    Output JSON: {{"refined_text": "..."}}
     """
     data = ask_llm(prompt, num_ctx=10240)
     return data.get('refined_text', text)
@@ -245,8 +243,8 @@ def get_asr_model():
         return ASR_MODEL
     from funasr import AutoModel
     model = AutoModel(
-        model="iic/SenseVoiceSmall",
-        device="mps",  # 'mps' if torch.backends.mps.is_available() else "cpu"
+        model="iic/Fun-ASR-Nano-2512",
+        device="mps",  # if torch.backends.mps.is_available() else "cpu",
         disable_update=True
     )
     return model

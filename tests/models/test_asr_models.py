@@ -6,7 +6,7 @@ from time import time
 from src.common import ask_llm
 from src.constants import FIREREDASR_MODEL_ROOT
 
-JUDGE_MODEL = 'qwen3'
+JUDGE_MODEL = 'qwen2.5:7b'
 
 
 # Pass these samples to tests using @pytest.mark.parametrize
@@ -138,6 +138,37 @@ def test_funasr_paraformer_zh(sample):
         pytest.skip(f"Audio not found: {audio_path}")
 
     print(f"🎙️ Transcribing with FunASR: {audio_path}")
+    res = model.generate(input=audio_path)
+    actual = res[0].get('text', '').strip()
+    print(f"📄 Result: {actual[:100]}...")
+
+    score = judge_asr_accuracy(expected, actual)
+    print(f"⭐️ Accuracy Score: {score:.2f}")
+    assert score >= 0.8
+
+
+@pytest.mark.parametrize("sample", SAMPLES)
+def test_funasr_nano(sample):
+    from funasr import AutoModel
+    print(f"\n🚀 Loading FunASR Nano-2512...")
+    funasr_root = os.path.expanduser("~/llm_models/funasr")
+    os.environ["MODELSCOPE_CACHE"] = funasr_root
+
+    start = time()
+    model = AutoModel(
+        model="iic/Fun-ASR-Nano-2512",
+        device="mps" if torch.backends.mps.is_available() else "cpu",
+        disable_update=True
+    )
+    print(f"✅ FunASR Nano Loaded in {time()-start:,.2f}s")
+
+    audio_path = sample['path']
+    expected = sample['transcript']
+    
+    if not os.path.exists(audio_path):
+        pytest.skip(f"Audio not found: {audio_path}")
+
+    print(f"🎙️ Transcribing with FunASR Nano: {audio_path}")
     res = model.generate(input=audio_path)
     actual = res[0].get('text', '').strip()
     print(f"📄 Result: {actual[:100]}...")
