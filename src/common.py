@@ -1,11 +1,36 @@
 import ollama
 import json
+import time
 import re
 import os
+import functools
+from typing import Callable, Any
 
 from src.constants import DEFAULT_MODEL, TRANSLATION_MAP_PATH
 
 
+def retry(retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)):
+    """
+    Decorator that retries a function call.
+    """
+    def decorator(func: Callable):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs) -> Any:
+            last_exception = None
+            for i in range(retries):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    print(f"⚠️ Retry {i+1}/{retries} for {func.__name__} due to {type(e).__name__}: {e}")
+                    if i < retries - 1:
+                        time.sleep(delay * (2 ** i))  # Exponential backoff
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+@retry(retries=3, delay=2.0)
 def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> dict:
     """ Centralized helper for Ollama LLM communication. """
     try:
@@ -39,7 +64,7 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
     except Exception as e:
         print(f"❌ Failed to parse LLM response as JSON: {e}")
         print(f"--- Raw Content ---\n{content}\n-----------------")
-        raise e
+        raise ValueError(f"Failed to parse LLM response as JSON: {e}\n{content[:1000]}...")
 
 
 def load_translation_cache() -> dict[str, str]:
