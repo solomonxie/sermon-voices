@@ -13,12 +13,37 @@ JUDGE_MODEL = 'qwen3'
 SAMPLES = [
     {
         'path': './tests/models/sample01.mp3',
-        'transcript': """[PLACEHOLDER: Please provide the ideal transcript for sample01.mp3 here]"""
+        'transcript': """
+            那么使徒是普世大公教会、有形教会的奠基人，就从圣经来看的话，这个使徒是普世有形大公教会的奠基人。
+            那么他是有形教会的奠基人，那么根基是谁？
+            根基是耶稣基督。
+            那么奠基人就是使徒，他是有形教会的奠基人。
+            在以夫所书的2章20节，里面是这么说的，说你们，当然这就是你们圣徒了。
+            那么圣徒被建立在使徒和先知的根基上，由耶稣基督亲自为房脚石，全房靠他联络得合适，渐渐成为主的圣殿。
+            也就是说教会是建立在基督这块房脚石上，那么是由使徒和先知打下的根基。
+            那么先知打下的是旧约的根基。 那么新约的根基由谁打下来，就由这就由使徒来打下来。
+        """
     },
     {
         'path': './tests/models/sample02.mp3',
-        'transcript': """[PLACEHOLDER: Please provide the ideal transcript for sample02.mp3 here]"""
+        'transcript': """
+            先低头闭目，我们来做一个祷告:
+            慈爱得天父、爱我们的主耶稣基督，我们感谢你、我们赞美你。
+            感谢主你真正是在荒野的当中开道路的神。
+            感谢主我们能够由这一场查经，完全是出于主的恩典。
+            我们没有奢望太多，当我们大家都有这样感动得时候，这件事就这么成了。
+            主你为我们预备的场所、为我们预备的时间。（我们）特别地感恩。
+            我们要把以下的时间，恭恭敬敬地交在主你的手中，恳求主你使用我们。
+            恳求主你让我们在这次的、以后每周二的查经当中，让我们能够真正是收获不下于每周五的查经收获。
+            恳求主也是保守我们每一个人，让我们每一个人能够在圣经当中学到生命的力量。
+            求主与我们同在，听我们的祷告，奉我主耶稣基督的名。
+            阿门。
+        """
     },
+    # {
+    #     'path': './tests/models/sample03.mp3',
+    #     'transcript': """[PLACEHOLDER: Please provide the ideal transcript for sample02.mp3 here]"""
+    # },
 ]
 
 def judge_asr_accuracy(expected: str, actual: str) -> float:
@@ -29,10 +54,10 @@ def judge_asr_accuracy(expected: str, actual: str) -> float:
     if not expected.strip() or "[PLACEHOLDER" in expected:
         print("⚠️ Skipping judgment: Ideal transcript placeholder not filled.")
         return 1.0  # Assume pass if no reference is provided yet
-        
+
     prompt = f"""
     Judge the accuracy of the following ASR (Automatic Speech Recognition) output against the expected transcript.
-    The ASR output might have minor punctuation differences or oral filler words, which should be tolerated. 
+    The ASR output might have minor punctuation differences or oral filler words, which should be tolerated.
     However, missing theological terms, incorrect biblical names, or significant meaning changes should result in a lower score.
 
     Expected Transcript:
@@ -41,7 +66,7 @@ def judge_asr_accuracy(expected: str, actual: str) -> float:
     ASR Output:
     {actual}
 
-    Return a JSON object with a single key 'score' containing a value between 0.0 and 1.0, 
+    Return a JSON object with a single key 'score' containing a value between 0.0 and 1.0,
     where 1.0 is a perfect match (ignoring minor fluff) and 0.0 is completely wrong.
     Do not include any explanation.
     """
@@ -58,7 +83,7 @@ def test_qwen3_asr(sample):
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
     os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.7"
     os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.5"
-    
+
     # Device and dtype optimization for Mac/MPS, CUDA, or CPU
     if torch.backends.mps.is_available():
         device_map = "mps"
@@ -108,7 +133,7 @@ def test_funasr_paraformer_zh(sample):
 
     audio_path = sample['path']
     expected = sample['transcript']
-    
+
     if not os.path.exists(audio_path):
         pytest.skip(f"Audio not found: {audio_path}")
 
@@ -139,7 +164,7 @@ def test_sensevoice_small(sample):
 
     audio_path = sample['path']
     expected = sample['transcript']
-    
+
     if not os.path.exists(audio_path):
         pytest.skip(f"Audio not found: {audio_path}")
 
@@ -160,17 +185,17 @@ def test_funasr_punc_ct():
 @pytest.mark.parametrize("sample", SAMPLES)
 def test_firered_asr(sample):
     from fireredasr.models.fireredasr import FireRedAsr
-    
+
     model_dir = os.path.join(FIREREDASR_MODEL_ROOT, "FireRedASR-LLM-L")
     if not os.path.exists(model_dir):
         pytest.skip(f"Model not found: {model_dir}")
 
     print(f"\n🚀 Loading FireRedASR-LLM-L...")
     model = FireRedAsr.from_pretrained("llm", model_dir)
-    
+
     audio_path = sample['path']
     expected = sample['transcript']
-    
+
     if not os.path.exists(audio_path):
         pytest.skip(f"Audio not found: {audio_path}")
 
@@ -178,7 +203,7 @@ def test_firered_asr(sample):
     batch_uttid = ["chunk"]
     batch_wav_path = [audio_path]
     use_gpu = 1 if (torch.cuda.is_available() or torch.backends.mps.is_available()) else 0
-    
+
     print(f"🎙️ Transcribing with FireRedASR: {audio_path}")
     results = model.transcribe(
         batch_uttid,
@@ -194,7 +219,7 @@ def test_firered_asr(sample):
         }
     )
     actual = results[0].strip()
-    
+
     # Cleanup memory
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
