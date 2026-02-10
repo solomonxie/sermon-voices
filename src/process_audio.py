@@ -12,9 +12,11 @@ import torch
 from pydub import AudioSegment
 
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
-from src.constants import OUTPUT_ROOT
+from src.constants import OUTPUT_ROOT, FUNASR_MODEL_ROOT
 
 ASR_MODEL = None
+# FunASR(Modelscope) model Root
+os.environ["MODELSCOPE_CACHE"] = FUNASR_MODEL_ROOT
 
 
 def main() -> None:
@@ -172,6 +174,7 @@ def transcribe_audio(audio_path: str) -> str:
     """
     Transcribes audio using SenseVoiceSmall with hotwords and memory safety.
     """
+    from funasr import AutoModel
     # Load hotwords
     hotwords = ""
     hotwords_path = os.path.join(OUTPUT_ROOT, 'bible_hotwords_5000_zh.txt')
@@ -179,7 +182,10 @@ def transcribe_audio(audio_path: str) -> str:
         with open(hotwords_path, 'r', encoding='utf-8') as f:
             hotwords = " ".join([line.strip() for line in f if line.strip()])
     # FunASR AutoModel API with hotwords and ITN (Inverse Text Normalization)
-    model = get_asr_model()
+    if ASR_MODEL is not None:
+        model = ASR_MODEL
+    else:
+        model = AutoModel(model="FunAudioLLM/Fun-ASR-Nano-2512", device="mps", disable_update=True)
     results = model.generate(input=audio_path, hotword=hotwords, use_itn=True)
     if not results: return ""
     # Extract text from results and strip ASR event tags (e.g., <|zh|><|NEUTRAL|>)
@@ -236,18 +242,6 @@ def refine_text(text: str, extra_context: str) -> str:
     """
     data = ask_llm(prompt, num_ctx=10240)
     return data.get('refined_text', text)
-
-
-def get_asr_model():
-    if ASR_MODEL is not None:
-        return ASR_MODEL
-    from funasr import AutoModel
-    model = AutoModel(
-        model="iic/Fun-ASR-Nano-2512",
-        device="mps",  # if torch.backends.mps.is_available() else "cpu",
-        disable_update=True
-    )
-    return model
 
 
 if __name__ == '__main__':

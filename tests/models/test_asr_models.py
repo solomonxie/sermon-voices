@@ -1,13 +1,14 @@
 import pytest
 import os
 import json
-import torch
 from time import time
 from src.common import ask_llm
-from src.constants import FIREREDASR_MODEL_ROOT
+from src.constants import FUNASR_MODEL_ROOT, FIREREDASR_MODEL_ROOT
 
 JUDGE_MODEL = 'qwen2.5:7b'
 
+# FunASR(Modelscope) model Root
+os.environ["MODELSCOPE_CACHE"] = FUNASR_MODEL_ROOT
 
 # Pass these samples to tests using @pytest.mark.parametrize
 SAMPLES = [
@@ -81,23 +82,11 @@ def test_qwen3_asr(sample):
     huggingface_root = os.path.expanduser("~/llm_models/huggingface")
     os.environ["HF_HOME"] = huggingface_root
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.7"
-    os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = "0.5"
 
     # Device and dtype optimization for Mac/MPS, CUDA, or CPU
-    if torch.backends.mps.is_available():
-        device_map = "mps"
-        dtype = torch.float16
-    elif torch.cuda.is_available():
-        device_map = "auto"
-        dtype = torch.bfloat16
-    else:
-        device_map = None
-        dtype = torch.float32
     QWEN3_ASR_MODEL = Qwen3ASRModel.from_pretrained(
         "Qwen/Qwen3-ASR-1.7B",
-        dtype=dtype,
-        device_map=device_map,
+        dtype="mp3",
         max_inference_batch_size=1,
         cache_dir=huggingface_root,
     )
@@ -120,13 +109,10 @@ def test_qwen3_asr(sample):
 def test_funasr_paraformer_zh(sample):
     from funasr import AutoModel
     print(f"\n🚀 Loading FunASR Paraformer-ZH...")
-    funasr_root = os.path.expanduser("~/llm_models/funasr")
-    os.environ["MODELSCOPE_CACHE"] = funasr_root
-
     start = time()
     model = AutoModel(
         model="iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device="mps",
         disable_update=True
     )
     print(f"✅ FunASR Model loaded in {time()-start:,.2f}s")
@@ -149,17 +135,18 @@ def test_funasr_paraformer_zh(sample):
 
 @pytest.mark.parametrize("sample", SAMPLES)
 def test_funasr_nano(sample):
+    """
+    Need to fix lib: venv/lib/python3.11/site-packages/funasr/models/fun_asr_nano/model.py
+    -from ctc import CTC
+    -from tools.utils import forced_align
+    +from .ctc import CTC
+    +from .tools.utils import forced_align
+    """
     from funasr import AutoModel
     print(f"\n🚀 Loading FunASR Nano-2512...")
-    funasr_root = os.path.expanduser("~/llm_models/funasr")
-    os.environ["MODELSCOPE_CACHE"] = funasr_root
 
     start = time()
-    model = AutoModel(
-        model="iic/Fun-ASR-Nano-2512",
-        device="mps" if torch.backends.mps.is_available() else "cpu",
-        disable_update=True
-    )
+    model = AutoModel(model="FunAudioLLM/Fun-ASR-Nano-2512", device="mps", disable_update=False)
     print(f"✅ FunASR Nano Loaded in {time()-start:,.2f}s")
 
     audio_path = sample['path']
@@ -182,13 +169,10 @@ def test_funasr_nano(sample):
 def test_sensevoice_small(sample):
     from funasr import AutoModel
     print(f"\n🚀 Loading SenseVoiceSmall...")
-    funasr_root = os.path.expanduser("~/llm_models/funasr")
-    os.environ["MODELSCOPE_CACHE"] = funasr_root
-
     start = time()
     model = AutoModel(
         model="iic/SenseVoiceSmall",
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device="mps",
         disable_update=True
     )
     print(f"✅ SenseVoiceSmall Model loaded in {time()-start:,.2f}s")
@@ -233,14 +217,12 @@ def test_firered_asr(sample):
     # FireRedASR expectations: batch_uttid, batch_wav_path, params
     batch_uttid = ["chunk"]
     batch_wav_path = [audio_path]
-    use_gpu = 1 if (torch.cuda.is_available() or torch.backends.mps.is_available()) else 0
-
     print(f"🎙️ Transcribing with FireRedASR: {audio_path}")
     results = model.transcribe(
         batch_uttid,
         batch_wav_path,
         {
-            "use_gpu": use_gpu,
+            "use_gpu": 1,
             "beam_size": 3,
             "decode_max_len": 0,
             "decode_min_len": 0,
