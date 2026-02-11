@@ -8,3 +8,4 @@ output/*/
 venv/*
 models/*
 .pytest_cache/*
+.env
