@@ -2,7 +2,6 @@ import pytest
 from src.common import retry
 
 def test_retry_success():
-    """ Test that retry decorator returns the result of a successful call. """
     @retry(retries=3, delay=0.1)
     def succeed():
         return "success"
@@ -10,7 +9,6 @@ def test_retry_success():
     assert succeed() == "success"
 
 def test_retry_eventual_success():
-    """ Test that retry decorator eventually succeeds after some failures. """
     calls = 0
     
     @retry(retries=3, delay=0.1)
@@ -25,7 +23,6 @@ def test_retry_eventual_success():
     assert calls == 3
 
 def test_retry_max_failures():
-    """ Test that retry decorator raises the last exception after max retries. """
     calls = 0
     
     @retry(retries=3, delay=0.1)
@@ -39,7 +36,6 @@ def test_retry_max_failures():
     assert calls == 3
 
 def test_retry_specific_exceptions():
-    """ Test that retry decorator only retries specific exceptions. """
     calls = 0
     
     @retry(retries=3, delay=0.1, exceptions=(ValueError,))
