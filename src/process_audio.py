@@ -43,10 +43,6 @@ def process_sermon(audio_path: str) -> None:
 
     print(f"\n⚙️ Processing: {audio_path}")
 
-    # 1. Get audio segments
-    segments = split_audio(audio_path)
-    audio = AudioSegment.from_file(audio_path)
-
     # 2. Sequential processing
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
     punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
@@ -62,19 +58,50 @@ def process_sermon(audio_path: str) -> None:
     safe_remove(bible_tmp)
     safe_remove(refined_tmp)
     safe_remove(zh_tmp)
+    safe_remove(current_segment_mp3)
 
-    for i, (start_ms, end_ms) in enumerate(segments):
-        print(f"\n📦 Processing segment {i+1}/{len(segments)} ({start_ms/1000:.1f}s - {end_ms/1000:.1f}s)")
-        # Export segment to tmp file
-        segment_audio = audio[start_ms:end_ms]
-        segment_audio = segment_audio.set_frame_rate(16000).set_channels(1)
-        segment_audio.export(current_segment_mp3, format="mp3", codec="libmp3lame")
+    # 1. Get audio segments
+    segments = split_audio(audio_path)
+    audio = AudioSegment.from_file(audio_path)
+
+    # Accumulate segments into batches (approx. 1 minute chunks)
+    current_batch = []
+    current_batch_duration = 0
+    chunk_limit_ms = 60000
+    batches = []
+
+    for start_ms, end_ms in segments:
+        duration = end_ms - start_ms
+        if current_batch_duration + duration > chunk_limit_ms and current_batch:
+            batches.append(current_batch)
+            current_batch = []
+            current_batch_duration = 0
+        
+        current_batch.append((start_ms, end_ms))
+        current_batch_duration += duration
+    
+    if current_batch:
+        batches.append(current_batch)
+
+    for i, batch in enumerate(batches):
+        batch_start_ms = batch[0][0]
+        batch_end_ms = batch[-1][1]
+        
+        start_time = time()
+        print(f"\n📦 Processing batch {i+1}/{len(batches)} ({batch_start_ms/1000:.1f}s - {batch_end_ms/1000:.1f}s)")
+        
+        # Merge batch segments into one chunk
+        chunk_audio = audio[batch_start_ms:batch_end_ms]
+        chunk_audio = chunk_audio.set_frame_rate(16000).set_channels(1)
+        chunk_audio.export(current_segment_mp3, format="mp3", codec="libmp3lame")
         
         process_segment(current_segment_mp3)
+        
+        elapsed = time() - start_time
+        print(f"⏱️ Batch {i+1} processed in {elapsed:.1f}s")
 
     # 3. Finalize: replace tmp with final and cleanup
     safe_replace(zh_tmp, final_zh)
-    safe_remove(current_segment_mp3)
     print(f"✅ Saved refined ZH transcript: {final_zh}")
     print(f"✅ Audio processing complete: {audio_path}")
 
@@ -119,14 +146,14 @@ def process_segment(audio_path: str) -> str:
     
     # 3. Iterative Refinement
     refined_zh = text
-    ralph_wiggum_loops = 5
+    ralph_wiggum_loops = 3
     for i in range(ralph_wiggum_loops):
         print(f"🔄 Ralph Wiggum correction loop {i+1}/{ralph_wiggum_loops}...")
         errors = pick_zh_errors(refined_zh)
         safe_write(errors_tmp, f'Errors (i={i}):\n' + errors)
         safe_write(refined_tmp, f'Refined Text (i={i}):\n{refined_zh}\n\n')
         
-        if not errors.strip():
+        if not errors.strip() and i > 0:
             print("✨ No more errors found.")
             break
             
@@ -134,12 +161,12 @@ def process_segment(audio_path: str) -> str:
             --- START CUSTOM INSTRUCTIONS ---
             {transcript_instr}
             --- END CUSTOM INSTRUCTIONS ---
+            --- START BIBLE REFERENCE (CUV) ---
+            {bible_context}
+            --- END BIBLE REFERENCE (CUV) ---
             --- START IDENTIFIED ERRORS ---
             {errors}
             --- END IDENTIFIED ERRORS ---
-            --- START BIBLE VERSE REFERENCE (CUV) ---
-            {bible_context}
-            --- END BIBLE VERSE REFERENCE ---
         """
         last_text = refined_zh
         refined_zh = refine_text(refined_zh, extra_context=extra_context)
@@ -160,18 +187,16 @@ def lookup_bible_verses(text: str) -> str:
     """
     print(f"📖 Looking up related Bible verses...")
     prompt = f"""
-    Based on the following sermon transcription segment, identify any related Bible verses (Chinese Union Version - CUV).
-    For each sentence or idea, find the most likely verse it is referencing or quoting.
+    从以下的讲道内容中，找出所有引用的圣经出处。
+    格式:
+    - [圣经书名] [章]:[节] - "[经文]"
     
-    Output the verses in the following format:
-    - [Book Name (Chinese)] [Chapter]:[Verse Range] - "[Full Verse Text in Chinese Union Version - CUV]"
-    
-    Transcription:
+    讲道内容:
     {text}
     
-    Output MUST be a JSON object: {{"verses": ["Verse 1 reference - text", "Verse 2 reference - text", ...]}}
-    If no clear verses are found, return {{"verses": []}}.
-    Do NOT include markdown, preamble, or explanations.
+    输出必须是JSON对象: {{"verses": ["[圣经书名] [章]:[节] - [经文]", "[圣经书名] [章]:[节] - [经文]", ...]}}
+    如果没有找到明确的经文，返回 {{"verses": []}}。
+    不要包含markdown、前言或解释。
     """
     data = ask_llm(prompt, num_ctx=10240)
     verses = data.get('verses', [])
@@ -185,7 +210,7 @@ def transcribe_audio(audio_path: str) -> str:
     from funasr import AutoModel
     # Load hotwords
     hotwords = ""
-    hotwords_path = os.path.join(OUTPUT_ROOT, 'bible_hotwords_5000_zh.txt')
+    hotwords_path = os.path.join(OUTPUT_ROOT, 'bible_hotwords_combined_zh.txt')
     if os.path.exists(hotwords_path):
         with open(hotwords_path, 'r', encoding='utf-8') as f:
             hotwords = " ".join([line.strip() for line in f if line.strip()])
@@ -206,22 +231,25 @@ def transcribe_audio(audio_path: str) -> str:
 
 def pick_zh_errors(text: str) -> str:
     """
-    Identifies errors in the transcript (grammar, biblical facts, stammers).
+    Identifies errors in the transcript focused on transcription quality.
     """
     print(f"🔍 Picking errors from transcript...")
     prompt = f"""
-    Analyze the Chinese sermon transcript and identify errors. Be concise.
-
+    Analyze the Chinese sermon transcript and identify transcription-related errors.
+    
+    PRIMARY GOAL:
+    Find ASR errors, punctuation issues, and clarity problems.
+    
     ERROR CATEGORIES:
-    - Grammar/Phrasing: Unnatural Mandarin or wrong words.
-    - Biblical Facts: Book names, figures, places, or verse numbers (match CUV).
-    - Fillers/Stammers: "这个这个", "呃", "嗯", "啊".
-    - Sense: Non-sense words or incomplete sentences.
+    - Fillers/Stammers: "这个这个", "呃", "嗯", "啊", "那个那个".
+    - Nonsense: Phrasing that doesn't make grammatical sense or seems phonetic-only.
+    - Punctuation: Missing or incorrect punctuation that changes the meaning.
+    - Repetitions: Obvious stuttering or inadvertent repeated words.
 
     Transcript:
     {text}
 
-    Output JSON: {{"errors": ["- Error with suggestion", ...]}}
+    Output JSON: {{"errors": ["- suggestion", ...]}}
     """
     data = ask_llm(prompt, num_ctx=10240)
     errors = data.get('errors', [])

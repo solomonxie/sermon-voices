@@ -1,17 +1,14 @@
 import pytest
 from src.process_audio import lookup_bible_verses
 
-def test_lookup_bible_verses(monkeypatch):
-    # Mock ask_llm to avoid actual API calls during unit test
-    def mock_ask_llm(*args, **kwargs):
-        return {
-            "verses": ["John 3:16 - 神愛世人，甚至將祂的獨生子賜给他们，叫一切信祂的，不致灭亡，反得永生。"]
-        }
-    
-    monkeypatch.setattr("src.process_audio.ask_llm", mock_ask_llm)
-    
-    transcript = "我们要讲到神爱世人，甚至将他的独生子赐给他们。"
+def test_lookup_bible_verses_accuracy():
+    from src.common import string_similarity
+    transcript = """
+        不要离开耶古撒冷，要等候负所应急的，就是你们听见我说过的约翰是用水施洗，但不多几日，你们要受圣名的洗忆。好，我们读了这段经文，感觉难点有没有这块有没有难点。
+    """
     result = lookup_bible_verses(transcript)
-    
-    assert "John 3:16" in result
-    assert "神愛世人" in result
+    expected_text = """
+        使徒行传 1:4-5 耶稣和他们聚集的时候，嘱咐他们说：不要离开耶路撒冷，要等候父所应许的，就是你们听见我说过的。约翰是用水施洗，但不多几日，你们要受圣灵的洗。
+    """
+    similarity = string_similarity(result, expected_text)
+    assert similarity >= 0.99, f"Similarity: {similarity}, Result: {result}, Expected: {expected_text}"
