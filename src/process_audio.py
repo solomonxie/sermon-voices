@@ -76,27 +76,27 @@ def process_sermon(audio_path: str) -> None:
             batches.append(current_batch)
             current_batch = []
             current_batch_duration = 0
-        
+
         current_batch.append((start_ms, end_ms))
         current_batch_duration += duration
-    
+
     if current_batch:
         batches.append(current_batch)
 
     for i, batch in enumerate(batches):
         batch_start_ms = batch[0][0]
         batch_end_ms = batch[-1][1]
-        
+
         start_time = time()
         print(f"\n📦 Processing batch {i+1}/{len(batches)} ({batch_start_ms/1000:.1f}s - {batch_end_ms/1000:.1f}s)")
-        
+
         # Merge batch segments into one chunk
         chunk_audio = audio[batch_start_ms:batch_end_ms]
         chunk_audio = chunk_audio.set_frame_rate(16000).set_channels(1)
         chunk_audio.export(current_segment_mp3, format="mp3", codec="libmp3lame")
-        
+
         process_segment(current_segment_mp3)
-        
+
         elapsed = time() - start_time
         print(f"⏱️ Batch {i+1} processed in {elapsed:.1f}s")
 
@@ -131,19 +131,19 @@ def process_segment(audio_path: str) -> str:
     bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
     refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-    
+
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
     transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
-    
+
     # 1. Transcribe
     text = transcribe_audio(audio_path)
     if not text.strip(): return ""
     safe_write(orig_tmp, text)
-    
+
     # 2. Bible Verse Lookup
     bible_context = lookup_bible_verses(text)
     safe_write(bible_tmp, bible_context)
-    
+
     # 3. Iterative Refinement
     refined_zh = text
     ralph_wiggum_loops = 3
@@ -152,11 +152,11 @@ def process_segment(audio_path: str) -> str:
         errors = pick_zh_errors(refined_zh)
         safe_write(errors_tmp, f'Errors (i={i}):\n' + errors)
         safe_write(refined_tmp, f'Refined Text (i={i}):\n{refined_zh}\n\n')
-        
+
         if not errors.strip() and i > 0:
             print("✨ No more errors found.")
             break
-            
+
         extra_context = f"""
             --- START CUSTOM INSTRUCTIONS ---
             {transcript_instr}
@@ -176,7 +176,7 @@ def process_segment(audio_path: str) -> str:
         if score >= 0.99:
             print(f"⏹️ Text stabilized ({score:.1%} similarity), finishing loop.")
             break
-            
+
     safe_write(zh_tmp, refined_zh)
     return refined_zh
 
@@ -190,16 +190,20 @@ def lookup_bible_verses(text: str) -> str:
     从以下的讲道内容中，找出所有引用的圣经出处。
     格式:
     - [圣经书名] [章]:[节] - "[经文]"
-    
+
     讲道内容:
     {text}
-    
-    输出必须是JSON对象: {{"verses": "[圣经书名] [章]:[节] - [经文]\n[圣经书名] [章]:[节] - [经文]\n..."}}
-    如果没有找到明确的经文，返回 {{"verses": ""}}。
+
+    输出必须是如下格式的JSON对象:
+    {{
+      "data": "[书名] [章]:[节] - [经文]; [书名] [章]:[节] - [经文];..."
+    }}
+
+    如果没有找到明确的经文，返回 {{"data": ""}}。
     不要包含markdown、前言或解释。
     """
     data = ask_llm(prompt)
-    return str(data.get('verses', ''))
+    return str(data.get('data', ''))
 
 
 def transcribe_audio(audio_path: str) -> str:
@@ -207,17 +211,17 @@ def transcribe_audio(audio_path: str) -> str:
     Transcribes audio using local FunASR SenseVoiceSmall model.
     """
     from funasr import AutoModel
-    
+
     # Models are cached in ~/llm_models/modelscope
     print(f"🎙️ Transcribing with SenseVoiceSmall: {os.path.basename(audio_path)}")
-    
+
     # Initialize model (ModelScope cache is handled via environment variable in main)
     model = AutoModel(
         model="iic/SenseVoiceSmall",
         device="mps", # if torch.backends.mps.is_available() else "cpu",
         disable_update=True
     )
-    
+
     try:
         res = model.generate(input=audio_path, cache={}, language="auto", use_itn=True)
         text = res[0].get('text', '').strip()
@@ -236,10 +240,10 @@ def pick_zh_errors(text: str) -> str:
     print(f"🔍 Picking errors from transcript...")
     prompt = f"""
     Analyze the Chinese sermon transcript and identify issues for transforming it into a polished article/paper.
-    
+
     PRIMARY GOAL:
     Find ASR errors, logical inconsistencies, and flow problems that hinder reading clarity. **Respect the original punctuations unless they are clearly incorrect ASR artifacts.**
-    
+
     ERROR CATEGORIES:
     - Fillers/Stammers: "这个这个", "呃", "嗯", "啊", "那个那个" (mark these for removal).
     - Logical Gaps: Phrasing that lacks context or seems disconnected from the surrounding text.
@@ -249,10 +253,10 @@ def pick_zh_errors(text: str) -> str:
     Transcript:
     {text}
 
-    Output JSON: {{"errors": "issue: suggestion\nissue: suggestion\n..."}}
+    Output JSON: {{"data": "issue: suggestion;\nissue: suggestion; ..."}}
     """
     data = ask_llm(prompt)
-    return str(data.get('errors', ''))
+    return str(data)
 
 
 def refine_text(text: str, extra_context: str) -> str:
@@ -275,16 +279,16 @@ def refine_text(text: str, extra_context: str) -> str:
     Original transcript:
     {text}
 
-    Output JSON: {{"refined_text": "..."}}
+    Output JSON: {{"data": "..."}}
     """
     data = ask_llm(prompt)
-    return data.get('refined_text', text)
+    return data.get('data', text)
 
 
 def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
     print(f"⚖️ Judging refinement stabilization...")
     prompt = f"""
-    Compare the following two versions of a sermon transcript. 
+    Compare the following two versions of a sermon transcript.
     Evaluate if the refinement has stabilized (i.e., no more significant corrections are needed).
 
     Previous Version:
@@ -303,7 +307,9 @@ def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
     }}
     """
     data = ask_llm(prompt)
-    return float(data.get('score', 0.0)), data.get('reason', 'No reason provided')
+    score = float(data.get('score') or 0.0)
+    reason = data.get('reason') or data.get('data') or 'No reason provided'
+    return score, reason
 
 
 if __name__ == '__main__':
