@@ -210,7 +210,7 @@ def lookup_bible_verses(text: str) -> str:
     不要包含markdown、前言或解释。
     """
     data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
-    return str(data.get('data', ''))
+    return str(data.get('data') or data)
 
 
 def transcribe_audio(audio_path: str, hotwords: str = "") -> str:
@@ -239,7 +239,7 @@ def transcribe_audio(audio_path: str, hotwords: str = "") -> str:
 
 def enhance_punctuation(text: str) -> str:
     from funasr import AutoModel
-    print(f"✍️ Restoring punctuation with CT-Punc...")
+    print(f"✍️ Enhancing punctuation with CT-Punc...")
     model = AutoModel(model="ct-punc", device="mps", disable_update=True)
     try:
         res = model.generate(input=text)
@@ -269,7 +269,7 @@ def pick_zh_errors(text: str) -> str:
     Output JSON: {{"data": "issue: suggestion;\nissue: suggestion; ..."}}
     """
     data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
-    return str(data.get('data')) or str(data)
+    return str(data.get('data') or data)
 
 
 def refine_text(text: str, extra_context: str) -> str:
@@ -292,7 +292,7 @@ def refine_text(text: str, extra_context: str) -> str:
     Output JSON: {{"data": "..."}}
     """
     data = ask_llm(prompt)
-    return data.get('data', text)
+    return str(data.get('data')) or text
 
 
 def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
