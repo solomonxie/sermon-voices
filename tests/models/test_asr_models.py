@@ -48,10 +48,6 @@ SAMPLES = [
 ]
 
 def judge_asr_accuracy(expected: str, actual: str) -> tuple[float, str]:
-    """
-    Uses an LLM to judge the accuracy of the ASR output compared to the expected transcript.
-    Returns a tuple of (score, reason) where score is between 0.0 and 1.0.
-    """
     if not expected.strip() or "[PLACEHOLDER" in expected:
         print("⚠️ Skipping judgment: Ideal transcript placeholder not filled.")
         return 1.0, "Skipped: no reference transcript"

@@ -51,9 +51,6 @@ def test_translate_en(model_name):
     assert score >= 0.7
 
 def judge_llm_performance(task: str, ideal: str, actual: str) -> float:
-    """
-    Uses an LLM judge to evaluate the performance of another LLM's output.
-    """
     if "[PLACEHOLDER" in ideal:
         print(f"⚠️ Skipping judgment for {task}: Ideal reference placeholder not filled.")
         return 1.0
