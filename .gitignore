@@ -1,8 +1,11 @@
 blobs/*
 !blobs/README.md
-output/*
-!output/README.md
-!output/translation_map.txt
+output/*/
+!output/*.md
+!output/*.txt
 .DS_Store
 *.pyc
 venv/*
+models/*
+.pytest_cache/*
+.env

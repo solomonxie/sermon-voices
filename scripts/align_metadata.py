@@ -13,10 +13,6 @@ from src.process_metadata import get_sermon_dir, save_metadata, save_translation
 
 
 def cleanup_title(title: str, sequence: str) -> str:
-    """
-    Extracts numbers from title. If a number matches the sequence string
-    (either as-is or padded), it is removed from the title.
-    """
     if not title or not sequence:
         return title
     
@@ -37,7 +33,6 @@ def cleanup_title(title: str, sequence: str) -> str:
 
 
 def extract_sequence_from_title(title: str) -> str:
-    """ Attempts to find a number in the title to use as a sequence. """
     title = pad_numbers(title)
     match = re.search(r'(\d+)', title)
     if match:
@@ -46,9 +41,6 @@ def extract_sequence_from_title(title: str) -> str:
 
 
 def safe_move_content(src, dst):
-    """
-    Moves content from src to dst. If dst exists, merges contents.
-    """
     if not os.path.exists(dst):
         shutil.move(src, dst)
         return
