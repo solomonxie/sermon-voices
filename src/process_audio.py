@@ -11,7 +11,7 @@ import gc
 import torch
 from pydub import AudioSegment
 
-from src.common import ask_llm, ask_openai, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
+from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
 from src.constants import OUTPUT_ROOT
 
 
@@ -198,44 +198,40 @@ def lookup_bible_verses(text: str) -> str:
     如果没有找到明确的经文，返回 {{"verses": []}}。
     不要包含markdown、前言或解释。
     """
-    data = ask_openai(prompt)
+    data = ask_llm(prompt)
     verses = data.get('verses', [])
     if isinstance(verses, str):
         return verses
     if isinstance(verses, list):
-        # Handle list of dicts just in case
+        # Handle list of dicts or strings
         return "\n".join([str(v) if not isinstance(v, dict) else json.dumps(v, ensure_ascii=False) for v in verses])
     return ""
 
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using OpenAI Whisper API.
+    Transcribes audio using local FunASR SenseVoiceSmall model.
     """
-    from src.common import OPENAI_CLIENT
+    from funasr import AutoModel
     
-    if not OPENAI_CLIENT:
-        raise ValueError("OPENAI_CLIENT not initialized. Check your OPENAI_API_KEY in .env.")
-
-    print(f"🎙️ Transcribing with OpenAI Whisper: {os.path.basename(audio_path)}")
+    # Models are cached in ~/llm_models/modelscope
+    print(f"🎙️ Transcribing with SenseVoiceSmall: {os.path.basename(audio_path)}")
     
-    # Load hotwords for the 'prompt' parameter in Whisper
-    hotwords = ""
-    hotwords_path = os.path.join(OUTPUT_ROOT, 'bible_hotwords_combined_zh.txt')
-    if os.path.exists(hotwords_path):
-        with open(hotwords_path, 'r', encoding='utf-8') as f:
-            hotwords = ",".join([line.strip() for line in f if line.strip()])
+    # Initialize model (ModelScope cache is handled via environment variable in main)
+    model = AutoModel(
+        model="iic/SenseVoiceSmall",
+        device="mps", # if torch.backends.mps.is_available() else "cpu",
+        disable_update=True
+    )
+    
     try:
-        with open(audio_path, "rb") as audio_file:
-            transcript = OPENAI_CLIENT.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                prompt=hotwords if hotwords else None,
-                response_format="text"
-            )
-        return transcript.strip()
+        res = model.generate(input=audio_path)
+        text = res[0].get('text', '').strip()
+        # Clean up SenseVoice tags if present (e.g., <|zh|><|NEUTRAL|><|Speech|>)
+        text = re.sub(r'<\|.*?\|>', '', text).strip()
+        return text
     except Exception as e:
-        print(f"❌ OpenAI Whisper Error: {e}")
+        print(f"❌ SenseVoiceSmall Error: {e}")
         return ""
 
 
@@ -261,7 +257,7 @@ def pick_zh_errors(text: str) -> str:
 
     Output JSON: {{"errors": ["- issue: suggestion", "- issue: suggestion", ...]}}
     """
-    data = ask_openai(prompt)
+    data = ask_llm(prompt)
     errors = data.get('errors', [])
     if isinstance(errors, str):
         return errors
@@ -303,7 +299,7 @@ def refine_text(text: str, extra_context: str) -> str:
 
     Output JSON: {{"refined_text": "..."}}
     """
-    data = ask_openai(prompt)
+    data = ask_llm(prompt)
     return data.get('refined_text', text)
 
 
@@ -328,7 +324,7 @@ def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
         "reason": "Brief explanation of why the score was given"
     }}
     """
-    data = ask_openai(prompt)
+    data = ask_llm(prompt)
     return float(data.get('score', 0.0)), data.get('reason', 'No reason provided')
 
 
