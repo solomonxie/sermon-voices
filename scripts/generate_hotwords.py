@@ -41,13 +41,14 @@ CHRISTIAN_TERMS = [
     "羅馬書", "哥林多前書", "哥林多後書", "加拉太書", "以弗所書", "腓立比書", "歌羅西書",
     "帖撒羅尼迦前書", "帖撒羅尼迦後書", "提摩太前書", "提摩太後書", "提多書", "腓利門書",
     "希伯來書", "雅各書", "彼得前書", "彼得後書", "約翰一書", "約翰二書", "約翰三書",
-    "猶大書", "啟示錄"
+    "猶大書", "啟示錄",
+    "低头闭目", "应许", "锡安",
 ]
 
 def main():
     output_dir = "output"
     verbal_file = os.path.join(output_dir, "christian_verbal_hotwords_zh.txt")
-    bible_5000_file = os.path.join(output_dir, "bible_hotwords_5000_zh.txt")
+    bible_5000_file = os.path.join(output_dir, "bible_hotwords_1000_zh.txt")
     combined_file = os.path.join(output_dir, "bible_hotwords_combined_zh.txt")
 
     # 1. Save verbal terms

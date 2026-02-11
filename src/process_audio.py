@@ -249,7 +249,7 @@ def pick_zh_errors(text: str) -> str:
     Transcript:
     {text}
 
-    Output JSON: {{"errors": ["- suggestion", ...]}}
+    Output JSON: {{"errors": "- issue: suggestion\\n- issue: suggestion\\n..."}}
     """
     data = ask_llm(prompt, num_ctx=10240)
     errors = data.get('errors', [])
