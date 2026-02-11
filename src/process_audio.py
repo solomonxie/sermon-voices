@@ -12,7 +12,7 @@ import torch
 from pydub import AudioSegment
 
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
-from src.constants import OUTPUT_ROOT
+from src.constants import OUTPUT_ROOT, BIBLE_HOTWORDS_PATH, CHRISTIAN_HOTWORDS_PATH
 
 
 # Audio processing
@@ -31,9 +31,6 @@ def main() -> None:
 
 
 def process_sermon(audio_path: str) -> None:
-    """
-    Processes a single sermon: Split -> Transcribe -> Refine -> Finalize.
-    """
     sermon_dir = os.path.dirname(audio_path)
     final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
 
@@ -127,6 +124,7 @@ def process_segment(audio_path: str) -> str:
     print(f"🎙️ Reading segment: {os.path.basename(audio_path)}")
     sermon_dir = os.path.dirname(audio_path)
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
+    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
     errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
     bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
     refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
@@ -135,10 +133,22 @@ def process_segment(audio_path: str) -> str:
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
     transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
 
+    # Load hotwords
+    hotwords = []
+    for path in [BIBLE_HOTWORDS_PATH]:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                hotwords.extend([line.strip() for line in f if line.strip()])
+    hotwords_str = " ".join(hotwords)
+
     # 1. Transcribe
-    text = transcribe_audio(audio_path)
+    text = transcribe_audio(audio_path, hotwords=hotwords_str)
     if not text.strip(): return ""
     safe_write(orig_tmp, text)
+
+    # 1.1 Restore Punctuation
+    text = enhance_punctuation(text)
+    safe_write(punc_tmp, text)
 
     # 2. Bible Verse Lookup
     bible_context = lookup_bible_verses(text)
@@ -182,9 +192,6 @@ def process_segment(audio_path: str) -> str:
 
 
 def lookup_bible_verses(text: str) -> str:
-    """
-    Identifies related CUV Bible verses based on the transcription.
-    """
     print(f"📖 Looking up related Bible verses...")
     prompt = f"""
     从以下的讲道内容中，找出所有引用的圣经出处。
@@ -202,41 +209,47 @@ def lookup_bible_verses(text: str) -> str:
     如果没有找到明确的经文，返回 {{"data": ""}}。
     不要包含markdown、前言或解释。
     """
-    data = ask_llm(prompt)
+    data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
     return str(data.get('data', ''))
 
 
-def transcribe_audio(audio_path: str) -> str:
-    """
-    Transcribes audio using local FunASR SenseVoiceSmall model.
-    """
+def transcribe_audio(audio_path: str, hotwords: str = "") -> str:
     from funasr import AutoModel
 
     # Models are cached in ~/llm_models/modelscope
-    print(f"🎙️ Transcribing with SenseVoiceSmall: {os.path.basename(audio_path)}")
+    print(f"🎙️ Transcribing: {os.path.basename(audio_path)} (hotwords: {len(hotwords)} chars)")
 
     # Initialize model (ModelScope cache is handled via environment variable in main)
     model = AutoModel(
-        model="iic/SenseVoiceSmall",
+        model="paraformer-zh",
         device="mps", # if torch.backends.mps.is_available() else "cpu",
         disable_update=True
     )
 
     try:
-        res = model.generate(input=audio_path, cache={}, language="auto", use_itn=True)
+        # res = model.generate(input=audio_path, cache={}, language="auto", use_itn=True, hotwords=hotwords)
+        res = model.generate(input=audio_path, batch_size_s=300, hotwords=hotwords)
         text = res[0].get('text', '').strip()
         # Clean up SenseVoice tags if present (e.g., <|zh|><|NEUTRAL|><|Speech|>)
         text = re.sub(r'<\|.*?\|>', '', text).strip()
         return text
     except Exception as e:
-        print(f"❌ SenseVoiceSmall Error: {e}")
-        return ""
+        raise RuntimeError(f"❌ Transcribe Error: {e}")
+
+
+def enhance_punctuation(text: str) -> str:
+    from funasr import AutoModel
+    print(f"✍️ Restoring punctuation with CT-Punc...")
+    model = AutoModel(model="ct-punc", device="mps", disable_update=True)
+    try:
+        res = model.generate(input=text)
+        return res[0].get('text', text).strip()
+    except Exception as e:
+        print(f"❌ CT-Punc Error: {e}")
+        return text
 
 
 def pick_zh_errors(text: str) -> str:
-    """
-    Identifies errors in the transcript focused on transcription quality.
-    """
     print(f"🔍 Picking errors from transcript...")
     prompt = f"""
     Analyze the Chinese sermon transcript and identify issues for transforming it into a polished article/paper.
@@ -255,14 +268,11 @@ def pick_zh_errors(text: str) -> str:
 
     Output JSON: {{"data": "issue: suggestion;\nissue: suggestion; ..."}}
     """
-    data = ask_llm(prompt)
-    return str(data)
+    data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
+    return str(data.get('data')) or str(data)
 
 
 def refine_text(text: str, extra_context: str) -> str:
-    """
-    Refines Chinese transcript for biblical accuracy and punctuation.
-    """
     print(f"✍️ Refining ZH text segment...")
     prompt = f"""
     Refine the Chinese sermon transcript.

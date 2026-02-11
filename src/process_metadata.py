@@ -36,7 +36,6 @@ def main() -> None:
 
 
 def process_metadata(path: str) -> None:
-    """ Extracts metadata and sets up the directory structure. """
     print(f"🔍 Extracting: {path}")
 
     # 1. Extraction
@@ -172,7 +171,6 @@ def extract_sequence(path: str, model: str | None = None, custom_instructions: s
 
 
 def extract_created_at(path: str, model: str | None = None, custom_instructions: str = "") -> str:
-    """ Extracts date (YYYYMMDD) from path or filename using LLM. """
     hints = os.path.basename(path)
     prompt = f"""
     Find the most probable creation date or preaching date from the given hints.
@@ -194,7 +192,6 @@ def extract_created_at(path: str, model: str | None = None, custom_instructions:
 
 
 def extract_metadata(path: str, model: str | None = None, custom_instructions: str = "") -> dict[str, any]:
-    """ Uses modular extraction calls to gather metadata. """
     print(f"🔍 Extracting metadata for: {path}")
     return {
         "preacher": extract_preacher(path, model=model, custom_instructions=custom_instructions),
@@ -208,7 +205,6 @@ def extract_metadata(path: str, model: str | None = None, custom_instructions: s
 
 
 def save_translation_cache(cache: dict[str, str]) -> None:
-    """ Saves the translation map to output/translation_map.txt. """
     try:
         with open(TRANSLATION_MAP_PATH, 'w', encoding='utf-8') as f:
             # Sort keys for consistency
@@ -219,7 +215,6 @@ def save_translation_cache(cache: dict[str, str]) -> None:
 
 
 def translate_metadata(metadata: dict[str, any], custom_instructions: str = "") -> dict[str, any]:
-    """ Translates metadata fields to English using Christian context knowledge. """
     cache = load_translation_cache()
 
     hints = 'Preacher: {}; Series: {}; Title: {}'.format(metadata['preacher'], metadata['series'], metadata['title'])
@@ -251,7 +246,6 @@ def translate_metadata(metadata: dict[str, any], custom_instructions: str = "") 
 
 
 def get_sermon_dir(metadata: dict[str, any]) -> str:
-    """ Generates a unique, slugified directory path for the sermon. """
     preacher_slug = slugify(str(metadata.get('preacher_en') or metadata.get('preacher') or 'unknown_preacher'))
     series_slug = slugify(str(metadata.get('series_en') or metadata.get('series') or 'unamed_series'))
 
@@ -263,7 +257,6 @@ def get_sermon_dir(metadata: dict[str, any]) -> str:
 
 
 def save_metadata(sermon_dir: str, metadata: dict[str, any]) -> None:
-    """ Persists metadata to metadata.json in the sermon directory. """
     metadata_path = os.path.join(sermon_dir, 'metadata.json')
     with open(metadata_path, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)

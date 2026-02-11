@@ -15,9 +15,6 @@ from src.process_metadata import get_sermon_dir, save_metadata
 
 
 def safe_move_content(src, dst):
-    """
-    Moves content from src to dst. If dst exists, merges contents.
-    """
     if not os.path.exists(dst):
         shutil.move(src, dst)
         return
@@ -38,7 +35,6 @@ def safe_move_content(src, dst):
 
 
 def get_max_sequence(series_path: str) -> int:
-    """ Finds the maximum sequence number in a series folder. """
     max_seq = 0
     # Sermon folders are like "001_title", "012_title"
     sermon_dirs = [d for d in os.listdir(series_path) if os.path.isdir(os.path.join(series_path, d))]

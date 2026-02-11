@@ -46,13 +46,11 @@ NAMES_TSV_URL = "https://raw.githubusercontent.com/BibleNLP/biblical-names-data/
 DICT_CSV_URL = "https://raw.githubusercontent.com/SuzanaK/biblical_dictionary/master/biblical_dictionary.csv"
 
 def is_chinese(text: str) -> bool:
-    """Check if a string contains only Chinese characters."""
     if not text:
         return False
     return all('\u4e00' <= char <= '\u9fff' for char in text)
 
 def fetch_content(url: str) -> Optional[str]:
-    """Fetch content from URL and handle errors."""
     try:
         print(f"Fetching from {url}...")
         with urllib.request.urlopen(url) as response:
@@ -62,7 +60,6 @@ def fetch_content(url: str) -> Optional[str]:
         return None
 
 def collect_names() -> Set[str]:
-    """Collect names from multiple sources."""
     all_names = set()
 
     # Source 1: Names TSV
