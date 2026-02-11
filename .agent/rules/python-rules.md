@@ -7,11 +7,14 @@ trigger: always_on
 Strict adherence to these rules ensures a robust and maintainable codebase for the sermon-voices project.
 
 ## Styling
+- Follow `Zen of Python` rules
+- Follow Google python style rules
 - Try not to have more blank lines, should be compact
 - Don't ever define a function inside a function
 - Use less variables if possible
-- Follow `Zen of Python` rules
-- Follow Google python style rules
+- Variable definition should be close to where it's used
+
+
 
 ## Coding Standards
 - Type Hinting: Mandatory for all function signatures (PEP 484). Use built-in types (e.g., list[str], dict[str, int]) instead of typing imports where possible.

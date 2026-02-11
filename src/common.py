@@ -73,7 +73,7 @@ def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: f
     try:
         return json.loads(content)
     except Exception as e:
-        print(f"❌ Failed to parse LLM response as JSON: {e}\nFall back to returning default structure.")
+        print(f"Failed to parse LLM response as JSON: {e}\nFall back to returning default structure.")
         return {'data': content}
 
 
