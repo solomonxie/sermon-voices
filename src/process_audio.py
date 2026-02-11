@@ -43,33 +43,43 @@ def process_sermon(audio_path: str) -> None:
 
     print(f"\n⚙️ Processing: {audio_path}")
 
-    # 1. Split audio into 1-min chunks
-    chunk_paths = split_audio(audio_path)
+    # 1. Get audio segments
+    segments = split_audio(audio_path)
+    audio = AudioSegment.from_file(audio_path)
 
     # 2. Sequential processing
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
     punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
     errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
+    bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
+    refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
+    current_segment_mp3 = os.path.join(sermon_dir, 'current_segment_tmp.mp3')
 
     safe_remove(orig_tmp)
     safe_remove(punc_tmp)
     safe_remove(errors_tmp)
+    safe_remove(bible_tmp)
+    safe_remove(refined_tmp)
     safe_remove(zh_tmp)
 
-    for chunk_path in chunk_paths:
-        process_chunk(chunk_path)
+    for i, (start_ms, end_ms) in enumerate(segments):
+        print(f"\n📦 Processing segment {i+1}/{len(segments)} ({start_ms/1000:.1f}s - {end_ms/1000:.1f}s)")
+        # Export segment to tmp file
+        segment_audio = audio[start_ms:end_ms]
+        segment_audio = segment_audio.set_frame_rate(16000).set_channels(1)
+        segment_audio.export(current_segment_mp3, format="mp3", codec="libmp3lame")
+        
+        process_segment(current_segment_mp3)
 
     # 3. Finalize: replace tmp with final and cleanup
     safe_replace(zh_tmp, final_zh)
+    safe_remove(current_segment_mp3)
     print(f"✅ Saved refined ZH transcript: {final_zh}")
     print(f"✅ Audio processing complete: {audio_path}")
 
 
-def split_audio(audio_path: str) -> list[str]:
-    sermon_dir = os.path.dirname(audio_path)
-    chunks_dir = os.path.join(sermon_dir, 'chunks')
-    os.makedirs(chunks_dir, exist_ok=True)
+def split_audio(audio_path: str) -> list[tuple[int, int]]:
     print(f"🎙️ Splitting audio using VAD: {audio_path}")
     from funasr import AutoModel
     vad_model = AutoModel(
@@ -79,25 +89,20 @@ def split_audio(audio_path: str) -> list[str]:
     )
     res = vad_model.generate(
         input=audio_path,
-        max_end_silence_time=500,
+        max_end_silence_time=1000,
         max_single_segment_time=60000,
     )
-    audio = AudioSegment.from_file(audio_path)
-    for chunk_idx, seg in enumerate(res[0]['value']):  # [[start, end], ...] in ms
-        start_ms, end_ms = seg
-        path = os.path.join(chunks_dir, f"chunk_{chunk_idx:03d}.mp3")
-        chunk = audio[start_ms:end_ms]
-        chunk = chunk.set_frame_rate(16000).set_channels(1)
-        chunk.export(path, format="mp3", codec="libmp3lame")
-    return sorted(glob(os.path.join(chunks_dir, "chunk_*.mp3")))
+    return res[0]['value']  # [[start, end], ...] in ms
 
 
 @retry(retries=3, delay=5.0)
-def process_chunk(audio_path: str) -> str:
-    print(f"🎙️ Reading chunk: {os.path.basename(audio_path)}")
-    sermon_dir = os.path.dirname(os.path.dirname(audio_path))
+def process_segment(audio_path: str) -> str:
+    print(f"🎙️ Reading segment: {os.path.basename(audio_path)}")
+    sermon_dir = os.path.dirname(audio_path)
     orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
     errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
+    bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
+    refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
     
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
@@ -110,6 +115,7 @@ def process_chunk(audio_path: str) -> str:
     
     # 2. Bible Verse Lookup
     bible_context = lookup_bible_verses(text)
+    safe_write(bible_tmp, bible_context)
     
     # 3. Iterative Refinement
     refined_zh = text
@@ -117,29 +123,31 @@ def process_chunk(audio_path: str) -> str:
     for i in range(ralph_wiggum_loops):
         print(f"🔄 Ralph Wiggum correction loop {i+1}/{ralph_wiggum_loops}...")
         errors = pick_zh_errors(refined_zh)
-        safe_write(errors_tmp, f'Errors ({i=}):\n' + errors)
+        safe_write(errors_tmp, f'Errors (i={i}):\n' + errors)
+        safe_write(refined_tmp, f'Refined Text (i={i}):\n{refined_zh}\n\n')
         
         if not errors.strip():
             print("✨ No more errors found.")
             break
             
         extra_context = f"""
-            --- START BIBLE VERSE REFERENCE (CUV) ---
-            {bible_context}
-            --- END BIBLE VERSE REFERENCE ---
             --- START CUSTOM INSTRUCTIONS ---
             {transcript_instr}
             --- END CUSTOM INSTRUCTIONS ---
             --- START IDENTIFIED ERRORS ---
             {errors}
             --- END IDENTIFIED ERRORS ---
+            --- START BIBLE VERSE REFERENCE (CUV) ---
+            {bible_context}
+            --- END BIBLE VERSE REFERENCE ---
         """
         last_text = refined_zh
         refined_zh = refine_text(refined_zh, extra_context=extra_context)
 
-        similarity = string_similarity(refined_zh, last_text)
-        if similarity >= 0.999:
-            print(f"⏹️ Text stabilized ({similarity:.1%} similarity), finishing loop.")
+        score, reason = judge_refinement(refined_zh, last_text)
+        print(f"⭐️ Stabilization Score: {score:.1%} | Reason: {reason}")
+        if score >= 0.99:
+            print(f"⏹️ Text stabilized ({score:.1%} similarity), finishing loop.")
             break
             
     safe_write(zh_tmp, refined_zh)
@@ -156,7 +164,7 @@ def lookup_bible_verses(text: str) -> str:
     For each sentence or idea, find the most likely verse it is referencing or quoting.
     
     Output the verses in the following format:
-    - [Book Name] [Chapter]:[Verse] - [Full Verse Text in CUV]
+    - [Book Name (Chinese)] [Chapter]:[Verse Range] - "[Full Verse Text in Chinese Union Version - CUV]"
     
     Transcription:
     {text}
@@ -182,10 +190,12 @@ def transcribe_audio(audio_path: str) -> str:
         with open(hotwords_path, 'r', encoding='utf-8') as f:
             hotwords = " ".join([line.strip() for line in f if line.strip()])
     # FunASR AutoModel API with hotwords and ITN (Inverse Text Normalization)
+    # NOTE: Fun-ASR-Nano-2512 costs too much memory but has similar accuracy to SenseVoiceSmall
+    # model = AutoModel(model="FunAudioLLM/Fun-ASR-Nano-2512", device="mps", disable_update=True)
     if ASR_MODEL is not None:
         model = ASR_MODEL
     else:
-        model = AutoModel(model="FunAudioLLM/Fun-ASR-Nano-2512", device="mps", disable_update=True)
+        model = AutoModel(model="iic/SenseVoiceSmall", device="mps", disable_update=True)
     results = model.generate(input=audio_path, hotword=hotwords, use_itn=True)
     if not results: return ""
     # Extract text from results and strip ASR event tags (e.g., <|zh|><|NEUTRAL|>)
@@ -228,10 +238,11 @@ def refine_text(text: str, extra_context: str) -> str:
     
     PRIMARY RULES:
     1. PRESERVE ORIGINAL WORDING & STYLE. Do NOT paraphrase.
-    2. CORRECT biblical terms/names to CUV standard.
-    3. Use the provided BIBLE VERSE REFERENCE as a baseline for accuracy.
-    4. Fix punctuation and obvious ASR errors.
+    2. CORRECT biblical terms/names to Chinese Union Version (CUV).
+    3. Use the provided Bible verse reference to correct biblical terms/names/sentences.
+    4. Fix punctuation and obvious ASR errors, separate paragraphs based on context.
     5. Remove stammers and fillers (呃, 嗯, 那个).
+    6. Do NOT add any additional content.
 
     {extra_context}
 
@@ -242,6 +253,31 @@ def refine_text(text: str, extra_context: str) -> str:
     """
     data = ask_llm(prompt, num_ctx=10240)
     return data.get('refined_text', text)
+
+
+def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
+    print(f"⚖️ Judging refinement stabilization...")
+    prompt = f"""
+    Compare the following two versions of a sermon transcript. 
+    Evaluate if the refinement has stabilized (i.e., no more significant corrections are needed).
+
+    Previous Version:
+    {last_text}
+
+    Current Version:
+    {text}
+
+    A score of 1.0 means the text is identical or only has trivial punctuation changes.
+    A score below 0.9 means significant meaningful changes were still made.
+
+    Return a JSON object:
+    {{
+        "score": 0.0-1.0,
+        "reason": "Brief explanation of why the score was given"
+    }}
+    """
+    data = ask_llm(prompt, num_ctx=10240)
+    return float(data.get('score', 0.0)), data.get('reason', 'No reason provided')
 
 
 if __name__ == '__main__':
