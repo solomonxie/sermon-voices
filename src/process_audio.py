@@ -67,7 +67,7 @@ def process_sermon(audio_path: str) -> None:
     # Accumulate segments into batches (approx. 1 minute chunks)
     current_batch = []
     current_batch_duration = 0
-    chunk_limit_ms = 60000
+    chunk_limit_ms = 60000 # 1 minute chunks
     batches = []
 
     for start_ms, end_ms in segments:
@@ -116,7 +116,7 @@ def split_audio(audio_path: str) -> list[tuple[int, int]]:
     )
     res = vad_model.generate(
         input=audio_path,
-        max_end_silence_time=1000,
+        max_end_silence_time=800,
         max_single_segment_time=60000,
     )
     return res[0]['value']  # [[start, end], ...] in ms
@@ -194,18 +194,12 @@ def lookup_bible_verses(text: str) -> str:
     讲道内容:
     {text}
     
-    输出必须是JSON对象: {{"verses": ["[圣经书名] [章]:[节] - [经文]", "[圣经书名] [章]:[节] - [经文]", ...]}}
-    如果没有找到明确的经文，返回 {{"verses": []}}。
+    输出必须是JSON对象: {{"verses": "[圣经书名] [章]:[节] - [经文]\n[圣经书名] [章]:[节] - [经文]\n..."}}
+    如果没有找到明确的经文，返回 {{"verses": ""}}。
     不要包含markdown、前言或解释。
     """
     data = ask_llm(prompt)
-    verses = data.get('verses', [])
-    if isinstance(verses, str):
-        return verses
-    if isinstance(verses, list):
-        # Handle list of dicts or strings
-        return "\n".join([str(v) if not isinstance(v, dict) else json.dumps(v, ensure_ascii=False) for v in verses])
-    return ""
+    return str(data.get('verses', ''))
 
 
 def transcribe_audio(audio_path: str) -> str:
@@ -225,7 +219,7 @@ def transcribe_audio(audio_path: str) -> str:
     )
     
     try:
-        res = model.generate(input=audio_path)
+        res = model.generate(input=audio_path, cache={}, language="auto", use_itn=True)
         text = res[0].get('text', '').strip()
         # Clean up SenseVoice tags if present (e.g., <|zh|><|NEUTRAL|><|Speech|>)
         text = re.sub(r'<\|.*?\|>', '', text).strip()
@@ -241,39 +235,24 @@ def pick_zh_errors(text: str) -> str:
     """
     print(f"🔍 Picking errors from transcript...")
     prompt = f"""
-    Analyze the Chinese sermon transcript and identify transcription-related errors.
+    Analyze the Chinese sermon transcript and identify issues for transforming it into a polished article/paper.
     
     PRIMARY GOAL:
-    Find ASR errors, punctuation issues, and clarity problems.
+    Find ASR errors, logical inconsistencies, and flow problems that hinder reading clarity. **Respect the original punctuations unless they are clearly incorrect ASR artifacts.**
     
     ERROR CATEGORIES:
-    - Fillers/Stammers: "这个这个", "呃", "嗯", "啊", "那个那个".
-    - Nonsense: Phrasing that doesn't make grammatical sense or seems phonetic-only.
-    - Punctuation: Missing or incorrect punctuation that changes the meaning.
-    - Repetitions: Obvious stuttering or inadvertent repeated words.
+    - Fillers/Stammers: "这个这个", "呃", "嗯", "啊", "那个那个" (mark these for removal).
+    - Logical Gaps: Phrasing that lacks context or seems disconnected from the surrounding text.
+    - Punctuation/Paragraphing: Missing logical breaks or incorrect punctuation for a formal article.
+    - Repetitions: Redundant phrases or stutters that should be streamlined.
 
     Transcript:
     {text}
 
-    Output JSON: {{"errors": ["- issue: suggestion", "- issue: suggestion", ...]}}
+    Output JSON: {{"errors": "issue: suggestion\nissue: suggestion\n..."}}
     """
     data = ask_llm(prompt)
-    errors = data.get('errors', [])
-    if isinstance(errors, str):
-        return errors
-    if isinstance(errors, list):
-        # Handle list of strings or list of dicts
-        processed = []
-        for e in errors:
-            if isinstance(e, dict):
-                # Convert dict to string: "issue: suggestion" or similar
-                issue = e.get('issue', e.get('error', 'unknown'))
-                suggestion = e.get('suggestion', e.get('fix', ''))
-                processed.append(f"{issue}: {suggestion}" if suggestion else issue)
-            else:
-                processed.append(str(e))
-        return "\n".join(processed)
-    return ""
+    return str(data.get('errors', ''))
 
 
 def refine_text(text: str, extra_context: str) -> str:
@@ -283,7 +262,6 @@ def refine_text(text: str, extra_context: str) -> str:
     print(f"✍️ Refining ZH text segment...")
     prompt = f"""
     Refine the Chinese sermon transcript.
-    
     PRIMARY RULES:
     1. PRESERVE ORIGINAL WORDING & STYLE. Do NOT paraphrase.
     2. CORRECT biblical terms/names to Chinese Union Version (CUV).

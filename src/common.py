@@ -66,10 +66,12 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
     # Remove <think>...</think> tags if present
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
     
-    # Robust JSON extraction
-    match = re.search(r'\{.*\}', content, re.DOTALL)
+    # Robust JSON extraction: look for the outermost {}
+    match = re.search(r'(\{.*\})', content, re.DOTALL)
     if match:
-        content = match.group(0)
+        content = match.group(1)
+    
+    # Basic cleanup for common LLM JSON mishaps
     content = content.replace('“', '"').replace('”', '"')
 
     try:
