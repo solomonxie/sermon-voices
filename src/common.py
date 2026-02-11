@@ -77,8 +77,8 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
     try:
         return json.loads(content)
     except Exception as e:
-        print(f"❌ Failed to parse LLM response as JSON: {e}")
-        raise ValueError(f"Failed to parse LLM response as JSON: {e}\n{content[:1000]}...")
+        print(f"❌ Failed to parse LLM response as JSON: {e}\nFall back to returning default structure.")
+        return {'data': content}
 
 
 @retry(retries=3, delay=2.0)
