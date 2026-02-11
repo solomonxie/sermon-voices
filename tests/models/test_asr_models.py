@@ -20,8 +20,8 @@ SAMPLES = [
             根基是耶稣基督。
             那么奠基人就是使徒，他是有形教会的奠基人。
             在以夫所书的2章20节，里面是这么说的，说你们，当然这就是你们圣徒了。
-            那么圣徒被建立在使徒和先知的根基上，由耶稣基督亲自为房脚石，全房靠他联络得合适，渐渐成为主的圣殿。
-            也就是说教会是建立在基督这块房脚石上，那么是由使徒和先知打下的根基。
+            那么圣徒被建立在使徒和先知的根基上，由耶稣基督亲自为房角石，全房靠他联络得合适，渐渐成为主的圣殿。
+            也就是说教会是建立在基督这块房角石上，那么是由使徒和先知打下的根基。
             那么先知打下的是旧约的根基。 那么新约的根基由谁打下来，就由这就由使徒来打下来。
         """
     },
@@ -47,15 +47,14 @@ SAMPLES = [
     # },
 ]
 
-def judge_asr_accuracy(expected: str, actual: str) -> float:
+def judge_asr_accuracy(expected: str, actual: str) -> tuple[float, str]:
     """
     Uses an LLM to judge the accuracy of the ASR output compared to the expected transcript.
-    Returns a score between 0.0 and 1.0.
+    Returns a tuple of (score, reason) where score is between 0.0 and 1.0.
     """
     if not expected.strip() or "[PLACEHOLDER" in expected:
         print("⚠️ Skipping judgment: Ideal transcript placeholder not filled.")
-        return 1.0  # Assume pass if no reference is provided yet
-
+        return 1.0, "Skipped: no reference transcript"
     prompt = f"""
     Judge the accuracy of the following ASR (Automatic Speech Recognition) output against the expected transcript.
     The ASR output might have minor punctuation differences or oral filler words, which should be tolerated.
@@ -67,12 +66,12 @@ def judge_asr_accuracy(expected: str, actual: str) -> float:
     ASR Output:
     {actual}
 
-    Return a JSON object with a single key 'score' containing a value between 0.0 and 1.0,
-    where 1.0 is a perfect match (ignoring minor fluff) and 0.0 is completely wrong.
-    Do not include any explanation.
+    Return a JSON object with two keys:
+    - 'score': a value between 0.0 and 1.0, where 1.0 is a perfect match (ignoring minor fluff) and 0.0 is completely wrong.
+    - 'reason': a brief explanation of the score, highlighting key differences if any.
     """
     res = ask_llm(prompt, model=JUDGE_MODEL)
-    return float(res.get('score', 0.0))
+    return float(res.get('score', 0.0)), res.get('reason', 'No reason provided')
 
 
 @pytest.mark.parametrize("sample", SAMPLES)
@@ -101,9 +100,12 @@ def test_qwen3_asr(sample):
     results = QWEN3_ASR_MODEL.transcribe(audio=audio_path)
     actual = " ".join([entry.text for entry in results]).strip()
     print(f"📄 Result: {actual[:100]}...")
-    score = judge_asr_accuracy(expected, actual)
+    score, reason = judge_asr_accuracy(expected, actual)
     print(f"⭐️ Accuracy Score: {score:.2f}")
-    assert score >= 0.8
+    print(f"📝 Reason: {reason}")
+    print(f"📊 Expected: {expected.strip()[:200]}")
+    print(f"📊 Actual:   {actual[:200]}")
+    assert score >= 0.8, f"Score {score:.2f} < 0.8 | Reason: {reason}"
 
 @pytest.mark.parametrize("sample", SAMPLES)
 def test_funasr_paraformer_zh(sample):
@@ -128,41 +130,47 @@ def test_funasr_paraformer_zh(sample):
     actual = res[0].get('text', '').strip()
     print(f"📄 Result: {actual[:100]}...")
 
-    score = judge_asr_accuracy(expected, actual)
+    score, reason = judge_asr_accuracy(expected, actual)
     print(f"⭐️ Accuracy Score: {score:.2f}")
-    assert score >= 0.8
+    print(f"📝 Reason: {reason}")
+    print(f"📊 Expected: {expected.strip()[:200]}")
+    print(f"📊 Actual:   {actual[:200]}")
+    assert score >= 0.8, f"Score {score:.2f} < 0.8 | Reason: {reason}"
 
 
-@pytest.mark.parametrize("sample", SAMPLES)
-def test_funasr_nano(sample):
-    """
-    Need to fix lib: venv/lib/python3.11/site-packages/funasr/models/fun_asr_nano/model.py
-    -from ctc import CTC
-    -from tools.utils import forced_align
-    +from .ctc import CTC
-    +from .tools.utils import forced_align
-    """
-    from funasr import AutoModel
-    print(f"\n🚀 Loading FunASR Nano-2512...")
-
-    start = time()
-    model = AutoModel(model="FunAudioLLM/Fun-ASR-Nano-2512", device="mps", disable_update=False)
-    print(f"✅ FunASR Nano Loaded in {time()-start:,.2f}s")
-
-    audio_path = sample['path']
-    expected = sample['transcript']
+# @pytest.mark.parametrize("sample", SAMPLES)
+# def test_funasr_nano(sample):
+#     """
+#     NOTE: Fun-ASR-Nano-2512 costs too much memory but has similar accuracy to iic/SenseVoiceSmall.
+#     This test is kept for comparison purposes, but SenseVoiceSmall is preferred for production use.
     
-    if not os.path.exists(audio_path):
-        pytest.skip(f"Audio not found: {audio_path}")
+#     Need to fix lib: venv/lib/python3.11/site-packages/funasr/models/fun_asr_nano/model.py
+#     -from ctc import CTC
+#     -from tools.utils import forced_align
+#     +from .ctc import CTC
+#     +from .tools.utils import forced_align
+#     """
+#     from funasr import AutoModel
+#     print(f"\n🚀 Loading FunASR Nano-2512...")
 
-    print(f"🎙️ Transcribing with FunASR Nano: {audio_path}")
-    res = model.generate(input=audio_path)
-    actual = res[0].get('text', '').strip()
-    print(f"📄 Result: {actual[:100]}...")
+#     start = time()
+#     model = AutoModel(model="FunAudioLLM/Fun-ASR-Nano-2512", device="mps", disable_update=False)
+#     print(f"✅ FunASR Nano Loaded in {time()-start:,.2f}s")
 
-    score = judge_asr_accuracy(expected, actual)
-    print(f"⭐️ Accuracy Score: {score:.2f}")
-    assert score >= 0.8
+#     audio_path = sample['path']
+#     expected = sample['transcript']
+    
+#     if not os.path.exists(audio_path):
+#         pytest.skip(f"Audio not found: {audio_path}")
+
+#     print(f"🎙️ Transcribing with FunASR Nano: {audio_path}")
+#     res = model.generate(input=audio_path)
+#     actual = res[0].get('text', '').strip()
+#     print(f"📄 Result: {actual[:100]}...")
+
+#     score = judge_asr_accuracy(expected, actual)
+#     print(f"⭐️ Accuracy Score: {score:.2f}")
+#     assert score >= 0.8
 
 
 @pytest.mark.parametrize("sample", SAMPLES)
@@ -188,9 +196,12 @@ def test_sensevoice_small(sample):
     actual = res[0].get('text', '').strip()
     print(f"📄 Result: {actual[:100]}...")
 
-    score = judge_asr_accuracy(expected, actual)
+    score, reason = judge_asr_accuracy(expected, actual)
     print(f"⭐️ Accuracy Score: {score:.2f}")
-    assert score >= 0.8
+    print(f"📝 Reason: {reason}")
+    print(f"📊 Expected: {expected.strip()[:200]}")
+    print(f"📊 Actual:   {actual[:200]}")
+    assert score >= 0.8, f"Score {score:.2f} < 0.8 | Reason: {reason}"
 
 
 def test_funasr_punc_ct():
@@ -240,6 +251,9 @@ def test_firered_asr(sample):
 
     print(f"📄 Result: {actual[:100]}...")
 
-    score = judge_asr_accuracy(expected, actual)
+    score, reason = judge_asr_accuracy(expected, actual)
     print(f"⭐️ Accuracy Score: {score:.2f}")
-    assert score >= 0.8
+    print(f"📝 Reason: {reason}")
+    print(f"📊 Expected: {expected.strip()[:200]}")
+    print(f"📊 Actual:   {actual[:200]}")
+    assert score >= 0.8, f"Score {score:.2f} < 0.8 | Reason: {reason}"
