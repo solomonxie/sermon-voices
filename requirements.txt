@@ -1,3 +1,7 @@
+# AI APIs
+openai>=1.0.0
+python-dotenv>=1.0.0
+
 # Transcription
 openai-whisper>=20231117
 faster-whisper>=0.10.0

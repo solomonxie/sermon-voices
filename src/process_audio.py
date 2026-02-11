@@ -11,12 +11,12 @@ import gc
 import torch
 from pydub import AudioSegment
 
-from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
-from src.constants import OUTPUT_ROOT, FUNASR_MODEL_ROOT
+from src.common import ask_llm, ask_openai, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
+from src.constants import OUTPUT_ROOT
 
-ASR_MODEL = None
-# FunASR(Modelscope) model Root
-os.environ["MODELSCOPE_CACHE"] = FUNASR_MODEL_ROOT
+
+# Audio processing
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 
 def main() -> None:
@@ -198,35 +198,45 @@ def lookup_bible_verses(text: str) -> str:
     如果没有找到明确的经文，返回 {{"verses": []}}。
     不要包含markdown、前言或解释。
     """
-    data = ask_llm(prompt, num_ctx=10240)
+    data = ask_openai(prompt)
     verses = data.get('verses', [])
-    return "\n".join(verses)
+    if isinstance(verses, str):
+        return verses
+    if isinstance(verses, list):
+        # Handle list of dicts just in case
+        return "\n".join([str(v) if not isinstance(v, dict) else json.dumps(v, ensure_ascii=False) for v in verses])
+    return ""
 
 
 def transcribe_audio(audio_path: str) -> str:
     """
-    Transcribes audio using SenseVoiceSmall with hotwords and memory safety.
+    Transcribes audio using OpenAI Whisper API.
     """
-    from funasr import AutoModel
-    # Load hotwords
+    from src.common import OPENAI_CLIENT
+    
+    if not OPENAI_CLIENT:
+        raise ValueError("OPENAI_CLIENT not initialized. Check your OPENAI_API_KEY in .env.")
+
+    print(f"🎙️ Transcribing with OpenAI Whisper: {os.path.basename(audio_path)}")
+    
+    # Load hotwords for the 'prompt' parameter in Whisper
     hotwords = ""
     hotwords_path = os.path.join(OUTPUT_ROOT, 'bible_hotwords_combined_zh.txt')
     if os.path.exists(hotwords_path):
         with open(hotwords_path, 'r', encoding='utf-8') as f:
-            hotwords = " ".join([line.strip() for line in f if line.strip()])
-    # FunASR AutoModel API with hotwords and ITN (Inverse Text Normalization)
-    # NOTE: Fun-ASR-Nano-2512 costs too much memory but has similar accuracy to SenseVoiceSmall
-    # model = AutoModel(model="FunAudioLLM/Fun-ASR-Nano-2512", device="mps", disable_update=True)
-    if ASR_MODEL is not None:
-        model = ASR_MODEL
-    else:
-        model = AutoModel(model="iic/SenseVoiceSmall", device="mps", disable_update=True)
-    results = model.generate(input=audio_path, hotword=hotwords, use_itn=True)
-    if not results: return ""
-    # Extract text from results and strip ASR event tags (e.g., <|zh|><|NEUTRAL|>)
-    text = results[0].get('text', '').strip()
-    text = re.sub(r'<\|.*?\|>', '', text)
-    return text.strip()
+            hotwords = ",".join([line.strip() for line in f if line.strip()])
+    try:
+        with open(audio_path, "rb") as audio_file:
+            transcript = OPENAI_CLIENT.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                prompt=hotwords if hotwords else None,
+                response_format="text"
+            )
+        return transcript.strip()
+    except Exception as e:
+        print(f"❌ OpenAI Whisper Error: {e}")
+        return ""
 
 
 def pick_zh_errors(text: str) -> str:
@@ -249,11 +259,25 @@ def pick_zh_errors(text: str) -> str:
     Transcript:
     {text}
 
-    Output JSON: {{"errors": "- issue: suggestion\\n- issue: suggestion\\n..."}}
+    Output JSON: {{"errors": ["- issue: suggestion", "- issue: suggestion", ...]}}
     """
-    data = ask_llm(prompt, num_ctx=10240)
+    data = ask_openai(prompt)
     errors = data.get('errors', [])
-    return "\n".join(errors)
+    if isinstance(errors, str):
+        return errors
+    if isinstance(errors, list):
+        # Handle list of strings or list of dicts
+        processed = []
+        for e in errors:
+            if isinstance(e, dict):
+                # Convert dict to string: "issue: suggestion" or similar
+                issue = e.get('issue', e.get('error', 'unknown'))
+                suggestion = e.get('suggestion', e.get('fix', ''))
+                processed.append(f"{issue}: {suggestion}" if suggestion else issue)
+            else:
+                processed.append(str(e))
+        return "\n".join(processed)
+    return ""
 
 
 def refine_text(text: str, extra_context: str) -> str:
@@ -279,7 +303,7 @@ def refine_text(text: str, extra_context: str) -> str:
 
     Output JSON: {{"refined_text": "..."}}
     """
-    data = ask_llm(prompt, num_ctx=10240)
+    data = ask_openai(prompt)
     return data.get('refined_text', text)
 
 
@@ -304,7 +328,7 @@ def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
         "reason": "Brief explanation of why the score was given"
     }}
     """
-    data = ask_llm(prompt, num_ctx=10240)
+    data = ask_openai(prompt)
     return float(data.get('score', 0.0)), data.get('reason', 'No reason provided')
 
 

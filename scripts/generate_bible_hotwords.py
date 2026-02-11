@@ -25,7 +25,7 @@ BIBLE_BOOKS = {
     "提摩太前书": ["提前"], "提摩太后书": ["提后"],
     "提多书": ["多"], "腓利门书": ["门"], "希伯来书": ["来"], "雅各书": ["雅"],
     "彼得前书": ["彼前"], "彼得后书": ["彼后"],
-    "约翰一书": ["约一", "約壹"], "约翰二书": ["约二", "約貳"], "约翰三书": ["约三", "約叄"],
+    "约翰一书": ["约一"], "约翰二书": ["约二"], "约翰三书": ["约三"],
     "犹大书": ["犹"], "启示录": ["启"]
 }
 
@@ -70,8 +70,8 @@ def collect_names() -> Set[str]:
     if content:
         reader = csv.reader(content.splitlines(), delimiter='\t')
         for row in reader:
-            # We check multiple columns for Chinese names as column index can vary
-            for idx in [5, 6]:
+            # Try to get Chinese name (usually in col 5 or 6, simplified preferred if known)
+            for idx in [5]:
                 if len(row) > idx:
                     name = row[idx].strip()
                     if is_chinese(name):
@@ -82,8 +82,8 @@ def collect_names() -> Set[str]:
     if content:
         reader = csv.reader(content.splitlines(), delimiter=';')
         for row in reader:
-            # Column 2 and 3 are Chinese Simplified and Traditional
-            for idx in [2, 3]:
+            # Column 2 is Chinese Simplified
+            for idx in [2]:
                 if len(row) > idx:
                     name = row[idx].strip()
                     if is_chinese(name):

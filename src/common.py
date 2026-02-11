@@ -6,7 +6,18 @@ import os
 import functools
 from typing import Callable, Any
 
+from openai import OpenAI
+from dotenv import load_dotenv
+
 from src.constants import DEFAULT_MODEL, TRANSLATION_MAP_PATH
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Global OpenAI client
+OPENAI_CLIENT = None
+if os.getenv("OPENAI_API_KEY"):
+    OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def retry(retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)):
@@ -50,24 +61,58 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
     except Exception as e:
         print(f"⚠️ LLM Error with model {model or DEFAULT_MODEL}: {e}")
         raise e
+    
     content = response['response']
-    # Remove <think>...</think> tags
+    # Remove <think>...</think> tags if present
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-
-    # Robust JSON extraction: try to find the first '{' and last '}'
+    
+    # Robust JSON extraction
     match = re.search(r'\{.*\}', content, re.DOTALL)
     if match:
         content = match.group(0)
-
-    # Some LLMs use full-width quotes (”) which break standard json.loads
     content = content.replace('“', '"').replace('”', '"')
 
     try:
         return json.loads(content)
     except Exception as e:
         print(f"❌ Failed to parse LLM response as JSON: {e}")
-        print(f"--- Raw Content ---\n{content}\n-----------------")
         raise ValueError(f"Failed to parse LLM response as JSON: {e}\n{content[:1000]}...")
+
+
+@retry(retries=3, delay=2.0)
+def ask_openai(prompt: str, model: str = None, temperature: float = 0.0) -> dict:
+    """ Centralized helper for OpenAI LLM communication. """
+    global OPENAI_CLIENT
+    if not OPENAI_CLIENT:
+        if os.getenv("OPENAI_API_KEY"):
+            OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        else:
+            raise ValueError("OPENAI_API_KEY not found in environment variables.")
+
+    target_model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    
+    try:
+        response = OPENAI_CLIENT.chat.completions.create(
+            model=target_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            response_format={"type": "json_object"}
+        )
+    except Exception as e:
+        print(f"⚠️ OpenAI Error with model {target_model}: {e}")
+        raise e
+
+    content = response.choices[0].message.content.strip()
+    match = re.search(r'\{.*\}', content, re.DOTALL)
+    if match:
+        content = match.group(0)
+    content = content.replace('“', '"').replace('”', '"')
+
+    try:
+        return json.loads(content)
+    except Exception as e:
+        print(f"❌ Failed to parse OpenAI response as JSON: {e}")
+        raise ValueError(f"Failed to parse OpenAI response as JSON: {e}\n{content[:1000]}...")
 
 
 def load_translation_cache() -> dict[str, str]:
@@ -78,8 +123,10 @@ def load_translation_cache() -> dict[str, str]:
             with open(TRANSLATION_MAP_PATH, 'r', encoding='utf-8') as f:
                 for line in f:
                     if ':' in line:
-                        original, translation = line.split(':', 1)
-                        cache[original.strip()] = translation.strip()
+                        parts = line.split(':', 1)
+                        if len(parts) == 2:
+                            original, translation = parts
+                            cache[original.strip()] = translation.strip()
         except Exception as e:
             print(f"⚠️ Error loading translation cache: {e}")
     return cache
