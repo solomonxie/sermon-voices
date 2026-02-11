@@ -17,7 +17,6 @@ def main() -> None:
 
 
 def process_en_documents(metadata_path: str) -> None:
-    """ Generates various document formats from translated English text. """
     sermon_dir = os.path.dirname(metadata_path)
     translation_en_path = os.path.join(sermon_dir, 'translation_en.txt')
     

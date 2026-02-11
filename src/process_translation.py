@@ -62,9 +62,6 @@ def process_sermon(metadata_path: str) -> None:
 
 
 def translate_text(text: str, custom_instructions: str = "") -> str:
-    """
-    Translates ZH text to EN (Biblical and Professional style).
-    """
     prompt = f"""
     Translate the following Chinese sermon transcript to English based on these rules:
     1. BIBLICAL ACCURACY: Strictly follow biblical context.
@@ -88,7 +85,6 @@ def translate_text(text: str, custom_instructions: str = "") -> str:
 
 
 def process_tts(metadata_path: str, full_text: str) -> None:
-    """ Generates English audio from translated text with sampling and segmentation. """
     sermon_dir = os.path.dirname(metadata_path)
     audio_path = os.path.join(sermon_dir, 'original.mp3')
     audio_en_path = os.path.join(sermon_dir, 'audio_en.mp3')
@@ -118,7 +114,6 @@ def process_tts(metadata_path: str, full_text: str) -> None:
 
 @retry(retries=3, delay=10.0)
 def text_to_speech_segmented(text: str, speaker_wav: str, output_path: str) -> None:
-    """ Splits text into chunks and generates concatenated TTS audio. """
     print(f"🗣️ Generating Cloned Voice TTS (XTTS v2) with segmentation...")
     
     try:
@@ -159,7 +154,6 @@ def text_to_speech_segmented(text: str, speaker_wav: str, output_path: str) -> N
 
 
 def split_text(text: str, max_chars: int = 250) -> list[str]:
-    """ Simple sentence-aware text splitter. """
     import re
     # Split by common sentence endings
     sentences = re.split(r'(?<=[.!?])\s+', text)

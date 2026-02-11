@@ -21,9 +21,6 @@ if os.getenv("OPENAI_API_KEY"):
 
 
 def retry(retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)):
-    """
-    Decorator that retries a function call.
-    """
     def decorator(func: Callable):
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> Any:
@@ -42,8 +39,7 @@ def retry(retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)
 
 
 @retry(retries=3, delay=2.0)
-def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: float = 0.0) -> dict:
-    """ Centralized helper for Ollama LLM communication. """
+def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: float = 0.0) -> dict:
     try:
         response = ollama.generate(
             model=model or DEFAULT_MODEL,
@@ -51,7 +47,7 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
             format='json',
             options={
                 "temperature": temperature,
-                "show_think": False,
+                "show_think": True,
                 "num_ctx": num_ctx,
                 # "num_thread": 4,
                 # Ollama on M1/Metal handles GPU acceleration automatically.
@@ -83,7 +79,6 @@ def ask_llm(prompt: str, num_ctx: int = 4096, model: str = None, temperature: fl
 
 @retry(retries=3, delay=2.0)
 def ask_openai(prompt: str, model: str = None, temperature: float = 0.0) -> dict:
-    """ Centralized helper for OpenAI LLM communication. """
     global OPENAI_CLIENT
     if not OPENAI_CLIENT:
         if os.getenv("OPENAI_API_KEY"):
@@ -118,7 +113,6 @@ def ask_openai(prompt: str, model: str = None, temperature: float = 0.0) -> dict
 
 
 def load_translation_cache() -> dict[str, str]:
-    """ Loads the translation map from output/translation_map.txt. """
     cache = {}
     if os.path.exists(TRANSLATION_MAP_PATH):
         try:
@@ -135,10 +129,6 @@ def load_translation_cache() -> dict[str, str]:
 
 
 def pad_numbers(text: str) -> str:
-    """
-    Ensures there is a space between numbers and adjacent words/characters.
-    Example: "Title01" -> "Title 01", "20230621Title" -> "20230621 Title"
-    """
     if not text:
         return text
     # Add space between non-digit and digit
@@ -150,9 +140,6 @@ def pad_numbers(text: str) -> str:
 
 
 def get_custom_instructions(preacher_dir: str, instruction_file: str) -> str:
-    """
-    Reads custom instructions from a specific .md file in the preacher's directory if it exists.
-    """
     instruction_path = os.path.join(preacher_dir, instruction_file)
     if os.path.exists(instruction_path):
         try:
@@ -166,29 +153,22 @@ def get_custom_instructions(preacher_dir: str, instruction_file: str) -> str:
 
 
 def safe_remove(path: str):
-    """ Safely removes a file if it exists. """
     if os.path.exists(path):
         os.remove(path)
 
 
 def safe_write(path: str, text: str):
-    """ Writes text to a file, ensuring the directory exists. Appends text. """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'a', encoding='utf-8') as f:
         f.write(text + "\n\n")
 
 
 def safe_replace(src_path: str, dest_path: str):
-    """ Safely replaces dest_path with src_path if src_path exists. """
     if os.path.exists(src_path):
         os.replace(src_path, dest_path)
 
 
 def string_similarity(s1: str, s2: str) -> float:
-    """
-    Calculates the similarity between two strings using the Levenshtein distance algorithm.
-    Returns a score between 0.0 (completely different) and 1.0 (identical).
-    """
     s1 = s1.strip()
     s2 = s2.strip()
     if not s1 and not s2:
