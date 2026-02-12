@@ -2,10 +2,14 @@ import os
 import re
 import json
 import math
+import hashlib
+import sqlite3
 import argparse
 import tempfile
+import subprocess
 from glob import glob
 from time import time
+from datetime import timedelta
 
 import gc
 import torch
@@ -14,10 +18,9 @@ from pydub import AudioSegment
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
 from src.constants import OUTPUT_ROOT, BIBLE_HOTWORDS_PATH, CHRISTIAN_HOTWORDS_PATH
 
-
 # Audio processing
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-
+BIBLE_DB_PATH = "output/bible_rag.db"
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement")
@@ -30,296 +33,304 @@ def main() -> None:
     process_sermon(args.audio_path)
 
 
+def preprocess_audio(audio_path: str) -> str:
+    """Preprocess audio using ffmpeg: noise reduction, normalization, filter."""
+    print(f"🧹 Preprocessing audio: {audio_path}")
+    output_path = audio_path.replace(".mp3", "_preprocessed.mp3")
+    if os.path.exists(output_path):
+        return output_path
+    
+    # ffmpeg command for: 
+    # 1. highpass=f=200: remove low frequency noise
+    # 2. lowpass=f=3000: remove high frequency noise (keep voice range)
+    # 3. afftdn: noise reduction
+    # 4. loudnorm: normalize volume
+    cmd = [
+        "ffmpeg", "-i", audio_path,
+        "-af", "highpass=f=200,lowpass=f=3000,afftdn,loudnorm",
+        "-ar", "16000", "-ac", "1",
+        output_path, "-y"
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return output_path
+
+
+def split_audio_vad(audio_path: str) -> list[dict]:
+    """Split audio using Silero VAD for better speech segment detection."""
+    from silero_vad import load_silero_vad, get_speech_timestamps
+    import torch
+    
+    print(f"🎙️ VAD splitting: {audio_path}")
+    model = load_silero_vad()
+    
+    # Load audio as tensor
+    import librosa
+    wav, sr = librosa.load(audio_path, sr=16000)
+    wav_tensor = torch.from_numpy(wav)
+    
+    # Get speech timestamps
+    speech_timestamps = get_speech_timestamps(wav_tensor, model, sampling_rate=16000)
+    # Returns list of {'start': sample_idx, 'end': sample_idx}
+    
+    # Convert to ms
+    segments = []
+    for ts in speech_timestamps:
+        segments.append({
+            "start": int(ts['start'] / 16),
+            "end": int(ts['end'] / 16)
+        })
+    return segments
+
+
 def process_sermon(audio_path: str) -> None:
     sermon_dir = os.path.dirname(audio_path)
     final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
+    final_lyric = os.path.join(sermon_dir, 'transcript_zh.lrc')
 
     # Checkpoint: Skip if already processed or audio missing
     if os.path.exists(final_zh) or not os.path.exists(audio_path):
         return
 
     print(f"\n⚙️ Processing: {audio_path}")
+    
+    # Preprocess
+    audio_path = preprocess_audio(audio_path)
 
     # 2. Sequential processing
-    orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
-    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
-    errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
-    bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
-    refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
+    lyric_tmp = os.path.join(sermon_dir, 'transcript_lyric_tmp.lrc')
     zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-    current_segment_mp3 = os.path.join(sermon_dir, 'current_segment_tmp.mp3')
-
-    safe_remove(orig_tmp)
-    safe_remove(punc_tmp)
-    safe_remove(errors_tmp)
-    safe_remove(bible_tmp)
-    safe_remove(refined_tmp)
+    
+    safe_remove(lyric_tmp)
     safe_remove(zh_tmp)
-    safe_remove(current_segment_mp3)
 
-    # 1. Get audio segments
-    segments = split_audio(audio_path)
+    segments = split_audio_vad(audio_path)
     audio = AudioSegment.from_file(audio_path)
-
-    # Accumulate segments into batches (approx. 1 minute chunks)
-    current_batch = []
-    current_batch_duration = 0
-    chunk_limit_ms = 60000 # 1 minute chunks
-    batches = []
-
-    for start_ms, end_ms in segments:
-        duration = end_ms - start_ms
-        if current_batch_duration + duration > chunk_limit_ms and current_batch:
-            batches.append(current_batch)
-            current_batch = []
-            current_batch_duration = 0
-
-        current_batch.append((start_ms, end_ms))
-        current_batch_duration += duration
-
-    if current_batch:
-        batches.append(current_batch)
-
-    for i, batch in enumerate(batches):
-        batch_start_ms = batch[0][0]
-        batch_end_ms = batch[-1][1]
-
-        start_time = time()
-        print(f"\n📦 Processing batch {i+1}/{len(batches)} ({batch_start_ms/1000:.1f}s - {batch_end_ms/1000:.1f}s)")
-
-        # Merge batch segments into one chunk
-        chunk_audio = audio[batch_start_ms:batch_end_ms]
-        chunk_audio = chunk_audio.set_frame_rate(16000).set_channels(1)
-        chunk_audio.export(current_segment_mp3, format="mp3", codec="libmp3lame")
-
-        process_segment(current_segment_mp3)
-
-        elapsed = time() - start_time
-        print(f"⏱️ Batch {i+1} processed in {elapsed:.1f}s")
-
-    # 3. Finalize: replace tmp with final and cleanup
-    safe_replace(zh_tmp, final_zh)
-    print(f"✅ Saved refined ZH transcript: {final_zh}")
-    print(f"✅ Audio processing complete: {audio_path}")
-
-
-def split_audio(audio_path: str) -> list[tuple[int, int]]:
-    print(f"🎙️ Splitting audio using VAD: {audio_path}")
+    
+    # Group segments into blocks to maintain context (max ~30s per block)
+    max_block_ms = 30000
+    blocks = []
+    current_block = []
+    current_block_ms = 0
+    
+    for seg in segments:
+        dur = seg['end'] - seg['start']
+        if current_block_ms + dur > max_block_ms and current_block:
+            blocks.append(current_block)
+            current_block = []
+            current_block_ms = 0
+        current_block.append(seg)
+        current_block_ms += dur
+    if current_block:
+        blocks.append(current_block)
+    
+    all_lyric_segments = []
+    
+    # Initialize models
+    from faster_whisper import WhisperModel
     from funasr import AutoModel
-    vad_model = AutoModel(
-        model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-        device="mps",  # if torch.backends.mps.is_available() else "cpu",
-        disable_update=True
-    )
-    res = vad_model.generate(
-        input=audio_path,
-        max_end_silence_time=800,
-        max_single_segment_time=60000,
-    )
-    return res[0]['value']  # [[start, end], ...] in ms
-
-
-@retry(retries=3, delay=5.0)
-def process_segment(audio_path: str) -> str:
-    print(f"🎙️ Reading segment: {os.path.basename(audio_path)}")
-    sermon_dir = os.path.dirname(audio_path)
-    orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
-    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
-    errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
-    bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
-    refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
-    zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-
+    import torch
+    
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    
+    print("🚀 Loading Whisper-turbo model (GPU not supported for faster-whisper on Mac, using CPU)...")
+    # ctranslate2 (faster-whisper) doesn't support MPS yet
+    whisper_model = WhisperModel("deepdml/faster-whisper-large-v3-turbo-ct2", device="cpu", compute_type="int8")
+    
+    print(f"🚀 Loading SenseVoiceSmall model on {device}...")
+    sensevoice_model = AutoModel(model="iic/SenseVoiceSmall", device=device, disable_update=True)
+    
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
-    transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
+    profile_path = os.path.join(preacher_dir, "profile.json")
+    preacher_metadata = {}
+    if os.path.exists(profile_path):
+        with open(profile_path, 'r', encoding='utf-8') as f:
+            preacher_metadata = json.load(f)
 
-    # Load hotwords
-    hotwords = []
-    for path in [BIBLE_HOTWORDS_PATH]:
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                hotwords.extend([line.strip() for line in f if line.strip()])
-    hotwords_str = " ".join(hotwords)
+    for idx, block in enumerate(blocks):
+        block_start = block[0]['start']
+        block_end = block[-1]['end']
+        print(f"\n📦 Processing block {idx+1}/{len(blocks)} ({block_start/1000:.1f}s - {block_end/1000:.1f}s)")
+        
+        refined_block, lyric_segments = process_block(
+            block, audio, whisper_model, sensevoice_model, preacher_metadata
+        )
+        
+        all_lyric_segments.extend(lyric_segments)
+        safe_write(zh_tmp, refined_block)
+        
+        # Overwrite lyric file with full segment list
+        os.makedirs(os.path.dirname(lyric_tmp), exist_ok=True)
+        with open(lyric_tmp, 'w', encoding='utf-8') as f:
+            f.write("\n".join(all_lyric_segments) + "\n")
 
-    # 1. Transcribe
-    text = transcribe_audio(audio_path, hotwords=hotwords_str)
+    # Finalize
+    safe_replace(zh_tmp, final_zh)
+    safe_replace(lyric_tmp, final_lyric)
+    print(f"✅ Saved transcript and lyric files.")
+
+
+def process_block(block: list[dict], audio: AudioSegment, whisper_model, sensevoice_model, preacher_metadata: dict) -> tuple[str, list[str]]:
+    """Process a single block of audio: transcribe, cross-ref, and refine."""
+    block_start = block[0]['start']
+    block_end = block[-1]['end']
+    block_audio = audio[block_start:block_end]
+    
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        block_audio.export(f.name, format="wav")
+        block_path = f.name
+    
+    lyric_segments = []
+    block_text = ""
+    
+    try:
+        segments_w, _ = whisper_model.transcribe(block_path, beam_size=5, language="zh", initial_prompt="讲道, 圣经, 福音, 神, 耶稣")
+        
+        for s in segments_w:
+            abs_start = block_start / 1000 + s.start
+            abs_end = block_start / 1000 + s.end
+            text = s.text.strip()
+            if not text: continue
+            
+            # Confidence cross-reference
+            if s.avg_logprob < -1.0:
+                print(f"⚠️ Low confidence: \"{text}\" ({s.avg_logprob:.2f})")
+                text = cross_reference_segment(block_audio, s.start, s.end, text, sensevoice_model, preacher_metadata)
+            
+            lyric_segments.append(f"[{format_timestamp(abs_start)} --> {format_timestamp(abs_end)}] {text}")
+            block_text += text + " "
+        
+        refined_block = refine_chunk(block_text, preacher_metadata)
+        return refined_block, lyric_segments
+        
+    finally:
+        safe_remove(block_path)
+
+
+def cross_reference_segment(block_audio: AudioSegment, start_s: float, end_s: float, whisper_text: str, sensevoice_model, preacher_metadata: dict) -> str:
+    """Cross-reference a low-confidence segment with SenseVoice."""
+    seg_audio = block_audio[start_s*1000 : end_s*1000]
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as sf:
+        seg_audio.export(sf.name, format="wav")
+        res_sv = sensevoice_model.generate(input=sf.name, batch_size_s=300)
+        text_sv = re.sub(r'<\|.*?\|>', '', res_sv[0].get('text', '')).strip()
+        safe_remove(sf.name)
+    
+    if text_sv and text_sv != whisper_text:
+        print(f"⚖️ Judging: W:\"{whisper_text}\" vs SV:\"{text_sv}\"")
+        return judge_transcriptions(whisper_text, text_sv, preacher_metadata)
+    return whisper_text
+
+
+def format_timestamp(seconds: float) -> str:
+    """Format seconds to HH:MM:SS.mmm"""
+    td = timedelta(seconds=seconds)
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    millis = int(td.microseconds / 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def refine_chunk(text: str, preacher_metadata: dict) -> str:
+    """Refine a chunk of text using Bible RAG and LLM."""
     if not text.strip(): return ""
-    safe_write(orig_tmp, text)
-
-    # 1.1 Restore Punctuation
-    text = enhance_punctuation(text)
-    safe_write(punc_tmp, text)
-
-    # 2. Bible Verse Lookup
-    bible_context = lookup_bible_verses(text)
-    safe_write(bible_tmp, bible_context)
-
-    # 3. Iterative Refinement
-    refined_zh = text
-    ralph_wiggum_loops = 3
-    for i in range(ralph_wiggum_loops):
-        print(f"🔄 Ralph Wiggum correction loop {i+1}/{ralph_wiggum_loops}...")
-        errors = pick_zh_errors(refined_zh)
-        safe_write(errors_tmp, f'Errors (i={i}):\n' + errors)
-        safe_write(refined_tmp, f'Refined Text (i={i}):\n{refined_zh}\n\n')
-
-        if not errors.strip() and i > 0:
-            print("✨ No more errors found.")
-            break
-
-        extra_context = f"""
-            --- START CUSTOM INSTRUCTIONS ---
-            {transcript_instr}
-            --- END CUSTOM INSTRUCTIONS ---
-            --- START BIBLE REFERENCE (CUV) ---
-            {bible_context}
-            --- END BIBLE REFERENCE (CUV) ---
-            --- START IDENTIFIED ERRORS ---
-            {errors}
-            --- END IDENTIFIED ERRORS ---
-        """
-        last_text = refined_zh
-        refined_zh = refine_text(refined_zh, extra_context=extra_context)
-
-        score, reason = judge_refinement(refined_zh, last_text)
-        print(f"⭐️ Stabilization Score: {score:.1%} | Reason: {reason}")
-        if score >= 0.99:
-            print(f"⏹️ Text stabilized ({score:.1%} similarity), finishing loop.")
-            break
-
-    safe_write(zh_tmp, refined_zh)
-    return refined_zh
-
-
-def lookup_bible_verses(text: str) -> str:
-    print(f"📖 Looking up related Bible verses...")
+    
+    # 1. Look up Bible verses via RAG
+    bible_verses = lookup_bible_rag(text)
+    
+    # 2. Refine with LLM
     prompt = f"""
-    从以下的讲道内容中，找出所有引用的圣经出处。
-    格式:
-    - [圣经书名] [章]:[节] - "[经文]"
-
-    讲道内容:
-    {text}
-
-    输出必须是如下格式的JSON对象:
-    {{
-      "data": "[书名] [章]:[节] - [经文]; [书名] [章]:[节] - [经文];..."
-    }}
-
-    如果没有找到明确的经文，返回 {{"data": ""}}。
-    不要包含markdown、前言或解释。
+    Refine the following Chinese sermon transcript segment.
+    PREACHER PROFILE: {json.dumps(preacher_metadata, ensure_ascii=False)}
+    BIBLE CONTEXT (CUV): {bible_verses}
+    
+    RULES:
+    1. Fix ASR errors, especially names and biblical terms.
+    2. Maintain the preacher's original style and tone.
+    3. Remove stammers and fillers.
+    4. Ensure smooth flow between sentences.
+    
+    Segment: {text}
+    
+    Output JSON: {{"data": "refined text..."}}
     """
-    data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
-    return str(data.get('data') or data)
+    res = ask_llm(prompt)
+    return res.get("data") or text
 
 
-def transcribe_audio(audio_path: str, hotwords: str = "") -> str:
-    from funasr import AutoModel
-
-    # Models are cached in ~/llm_models/modelscope
-    print(f"🎙️ Transcribing: {os.path.basename(audio_path)} (hotwords: {len(hotwords)} chars)")
-
-    # Initialize model (ModelScope cache is handled via environment variable in main)
-    model = AutoModel(
-        model="paraformer-zh",
-        device="mps", # if torch.backends.mps.is_available() else "cpu",
-        disable_update=True
-    )
-
-    try:
-        # res = model.generate(input=audio_path, cache={}, language="auto", use_itn=True, hotwords=hotwords)
-        res = model.generate(input=audio_path, batch_size_s=300, hotwords=hotwords)
-        text = res[0].get('text', '').strip()
-        # Clean up SenseVoice tags if present (e.g., <|zh|><|NEUTRAL|><|Speech|>)
-        text = re.sub(r'<\|.*?\|>', '', text).strip()
-        return text
-    except Exception as e:
-        raise RuntimeError(f"❌ Transcribe Error: {e}")
-
-
-def enhance_punctuation(text: str) -> str:
-    from funasr import AutoModel
-    print(f"✍️ Enhancing punctuation with CT-Punc...")
-    model = AutoModel(model="ct-punc", device="mps", disable_update=True)
-    try:
-        res = model.generate(input=text)
-        return res[0].get('text', text).strip()
-    except Exception as e:
-        print(f"❌ CT-Punc Error: {e}")
-        return text
-
-
-def pick_zh_errors(text: str) -> str:
-    print(f"🔍 Picking errors from transcript...")
+def judge_transcriptions(text_whisper: str, text_sensevoice: str, preacher_metadata: dict) -> str:
+    """Use LLM to judge between two transcription versions."""
     prompt = f"""
-    Analyze the Chinese sermon transcript and identify issues for transforming it into a polished article/paper.
-
-    PRIMARY GOAL:
-    Find ASR errors, logical inconsistencies, and flow problems that hinder reading clarity. **Respect the original punctuations unless they are clearly incorrect ASR artifacts.**
-
-    ERROR CATEGORIES:
-    - Fillers/Stammers: "这个这个", "呃", "嗯", "啊", "那个那个" (mark these for removal).
-    - Logical Gaps: Phrasing that lacks context or seems disconnected from the surrounding text.
-    - Punctuation/Paragraphing: Missing logical breaks or incorrect punctuation for a formal article.
-    - Repetitions: Redundant phrases or stutters that should be streamlined.
-
-    Transcript:
-    {text}
-
-    Output JSON: {{"data": "issue: suggestion;\nissue: suggestion; ..."}}
+    As an expert in Christian sermons, judge between these two ASR transcription versions of the same audio segment.
+    PREACHER PROFILE: {json.dumps(preacher_metadata, ensure_ascii=False)}
+    
+    Version A (Whisper): {text_whisper}
+    Version B (SenseVoice): {text_sensevoice}
+    
+    Analyze which version is more grammatically correct and consistent with a sermon context and the preacher's profile. You can combine them if needed to get the most accurate result.
+    
+    Output JSON: {{"data": "final result..."}}
     """
-    data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
-    return str(data.get('data') or data)
+    res = ask_llm(prompt)
+    return res.get("data") or text_whisper
 
 
-def refine_text(text: str, extra_context: str) -> str:
-    print(f"✍️ Refining ZH text segment...")
+def lookup_bible_rag(text: str) -> str:
+    """Look up Bible verses using Pinyin-based RAG."""
+    if not os.path.exists(BIBLE_DB_PATH) or not text.strip():
+        return ""
+    
+    # 1. Extract keywords for better RAG lookup
     prompt = f"""
-    Refine the Chinese sermon transcript.
-    PRIMARY RULES:
-    1. PRESERVE ORIGINAL WORDING & STYLE. Do NOT paraphrase.
-    2. CORRECT biblical terms/names to Chinese Union Version (CUV).
-    3. Use the provided Bible verse reference to correct biblical terms/names/sentences.
-    4. Fix punctuation and obvious ASR errors, separate paragraphs based on context.
-    5. Remove stammers and fillers (呃, 嗯, 那个).
-    6. Do NOT add any additional content.
-
-    {extra_context}
-
-    Original transcript:
-    {text}
-
-    Output JSON: {{"data": "..."}}
+    从讲道内容中提取2-3个最核心的圣经人物、地名或神学关键词，用于圣经原文检索。
+    如果发现明显的语音识别错误（例如“耶稣撒冷”应为“耶路撒冷”），请在关键词中输出更正后的圣经术语。
+    
+    输出JSON格式: {{"keywords": ["关键词1", "关键词2"]}}
+    内容: {text[:500]}
     """
-    data = ask_llm(prompt)
-    return str(data.get('data')) or text
+    res = ask_llm(prompt)
+    keywords = res.get("keywords") or res.get("data") or []
+    if isinstance(keywords, str):
+        keywords = keywords.split()
+    
+    print(f"🔍 Extracted Bible keywords: {keywords}")
+    
+    if not keywords:
+        return ""
 
-
-def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
-    print(f"⚖️ Judging refinement stabilization...")
-    prompt = f"""
-    Compare the following two versions of a sermon transcript.
-    Evaluate if the refinement has stabilized (i.e., no more significant corrections are needed).
-
-    Previous Version:
-    {last_text}
-
-    Current Version:
-    {text}
-
-    A score of 1.0 means the text is identical or only has trivial punctuation changes.
-    A score below 0.9 means significant meaningful changes were still made.
-
-    Return a JSON object:
-    {{
-        "score": 0.0-1.0,
-        "reason": "Brief explanation of why the score was given"
-    }}
-    """
-    data = ask_llm(prompt)
-    score = float(data.get('score') or 0.0)
-    reason = data.get('reason') or data.get('data') or 'No reason provided'
-    return score, reason
+    from scripts.generate_bible_rag import get_pinyin
+    conn = sqlite3.connect(BIBLE_DB_PATH)
+    cursor = conn.cursor()
+    
+    results = []
+    seen = set()
+    
+    for kw in keywords:
+        # Clean keyword
+        kw = re.sub(r'[^\w\s]', '', kw).strip()
+        if not kw: continue
+        
+        py = get_pinyin(kw)
+        print(f"  - Searching pinyin: {py} for keyword: {kw}")
+        if len(py) < 4: continue # skip too short pinyin
+        
+        # Search for pinyin in verses
+        cursor.execute("SELECT book, chapter, verse, text FROM verses WHERE pinyin LIKE '%' || ? || '%'", (py,))
+        rows = cursor.fetchall()
+        print(f"  - Found {len(rows)} potential matches for {py}")
+        for r in rows:
+            key = f"{r[0]}{r[1]}{r[2]}"
+            if key not in seen:
+                results.append(f"{r[0]} {r[1]}:{r[2]} - \"{r[3]}\"")
+                seen.add(key)
+            if len(results) >= 10: break
+        if len(results) >= 10: break
+    
+    conn.close()
+    res_str = "; ".join(results)
+    print(f"📖 RAG Results: {len(results)} verses found.")
+    return res_str
 
 
 if __name__ == '__main__':

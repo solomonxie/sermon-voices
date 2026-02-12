@@ -21,6 +21,8 @@ ollama>=0.1.0
 pydub>=0.25.1
 soundfile>=0.12.1
 librosa>=0.10.1
+silero-vad>=5.1.0
+onnxruntime>=1.16.0
 
 # Utilities
 numpy>=1.24.0
