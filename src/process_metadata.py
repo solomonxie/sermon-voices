@@ -42,9 +42,9 @@ def process_metadata(path: str) -> None:
     # Find preacher folder in blobs
     rel_path = os.path.relpath(path, BLOBS_ROOT)
     preacher_folder = rel_path.split(os.sep)[0]
-    preacher_dir = os.path.join(BLOBS_ROOT, preacher_folder)
+    preacher_blob_dir = os.path.join(BLOBS_ROOT, preacher_folder)
     
-    custom_instr = get_custom_instructions(preacher_dir, "metadata_instruction.md")
+    custom_instr = get_custom_instructions(preacher_blob_dir, "metadata_instruction.md")
 
     metadata = extract_metadata(path, custom_instructions=custom_instr)
     if not metadata:
@@ -53,20 +53,24 @@ def process_metadata(path: str) -> None:
     # 1.1 Translation
     metadata = translate_metadata(metadata, custom_instructions=custom_instr)
 
-
     # 2. Directory Setup
     sermon_dir = get_sermon_dir(metadata)
     os.makedirs(sermon_dir, exist_ok=True)
+    
+    # 3. Preacher Profile
+    preacher_output_dir = os.path.dirname(os.path.dirname(sermon_dir))
+    profile = process_preacher_profile(preacher_blob_dir, preacher_output_dir)
+    metadata["profile"] = profile
 
-    # 3. Move/Copy Original File
+    # 4. Move/Copy Original File
     original_path = os.path.join(sermon_dir, 'original.mp3')
     if not os.path.exists(original_path):
         shutil.copy2(path, original_path)
 
-    # 4. Save Metadata
+    # 5. Save Metadata
     save_metadata(sermon_dir, metadata)
 
-    # 5. Add to processed log (Phase 1 complete)
+    # 6. Add to processed log (Phase 1 complete)
     with open(PROCESSED_LOG, 'a', encoding='utf-8') as f:
         f.write(f"{os.path.abspath(metadata['original_path'])}\n")
     print(f"✅ Metadata extracted: {metadata['title']}")
@@ -254,6 +258,39 @@ def get_sermon_dir(metadata: dict[str, any]) -> str:
         slugify(str(metadata.get('title_en') or metadata.get('title', 'untitled')))
     )
     return os.path.join(OUTPUT_ROOT, preacher_slug, series_slug, sermon_slug)
+
+
+def process_preacher_profile(preacher_blob_dir: str, preacher_output_dir: str) -> dict:
+    """Scan for profile.txt, extract normalized fields, and save profile.json."""
+    profile_txt_path = os.path.join(preacher_blob_dir, "profile.txt")
+    profile_json_path = os.path.join(preacher_output_dir, "profile.json")
+    
+    if os.path.exists(profile_json_path):
+        with open(profile_json_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+            
+    if not os.path.exists(profile_txt_path):
+        return {}
+        
+    print(f"👤 Processing preacher profile: {profile_txt_path}")
+    with open(profile_txt_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+        
+    prompt = f"""
+    Extract preacher profile information from the following text.
+    Normalize the fields: Region (e.g., Taiwan, Malaysia, China), Accent (e.g., Hakka, Cantonese, Standard), Role (e.g., Pastor, Evangelist), and any other relevant attributes.
+    
+    Text: {content}
+    
+    Output JSON: {{"region": "...", "accent": "...", "role": "...", "attributes": ["...", "..."]}}
+    """
+    profile = ask_llm(prompt)
+    
+    os.makedirs(preacher_output_dir, exist_ok=True)
+    with open(profile_json_path, 'w', encoding='utf-8') as f:
+        json.dump(profile, f, ensure_ascii=False, indent=2)
+        
+    return profile
 
 
 def save_metadata(sermon_dir: str, metadata: dict[str, any]) -> None:

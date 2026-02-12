@@ -1,6 +1,7 @@
 blobs/*
 !blobs/README.md
 output/*/
+output/*.db
 !output/*.md
 !output/*.txt
 .DS_Store
