@@ -14,6 +14,10 @@ from datetime import timedelta
 import gc
 import torch
 from pydub import AudioSegment
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
 from src.constants import OUTPUT_ROOT, BIBLE_HOTWORDS_PATH, CHRISTIAN_HOTWORDS_PATH
@@ -37,9 +41,14 @@ def main() -> None:
 def preprocess_audio(audio_path: str) -> str:
     """Preprocess audio using ffmpeg: noise reduction, normalization, filter."""
     print(f"🧹 Preprocessing audio: {audio_path}")
-    output_path = audio_path.replace(".mp3", "_cleaned.mp3")
+    output_path = audio_path.replace(".mp3", "_cleaned.wav")
     if os.path.exists(output_path):
         return output_path
+
+    # Cleanup old mp3 if exists
+    old_mp3 = audio_path.replace(".mp3", "_cleaned.mp3")
+    if os.path.exists(old_mp3):
+        os.remove(old_mp3)
 
     # ffmpeg command for:
     # 1. highpass=f=200: remove low frequency noise
@@ -82,9 +91,117 @@ def split_audio_vad(audio_path: str) -> list[dict]:
         if end_ms - start_ms >= min_dur_ms:
             segments.append({
                 "start": start_ms,
-                "end": end_ms
+                "end": end_ms,
+                "spk": "SPEAKER_00"
             })
     return segments
+
+
+def run_diarization(audio_path: str, sermon_dir: str) -> list[dict]:
+    """Identify speakers and extract 10s samples using pyannote.audio."""
+    from pyannote.audio import Pipeline
+    import torch
+    from pydub import AudioSegment
+    
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        print("❌ HF_TOKEN not found in environment. Diarization will fail.")
+        segments = split_audio_vad(audio_path)
+        return segments
+
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"🚀 Loading pyannote.audio pipeline on {device}...")
+    
+    try:
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=hf_token
+        )
+        pipeline.to(device)
+    except Exception as e:
+        if "403" in str(e):
+            print(f"❌ Failed to load pyannote pipeline: 403 Client Error.")
+            print("💡 This usually means you need to accept the model's user conditions on Hugging Face.")
+            print("Please visit the following URLs and accept the terms:")
+            print("1. https://hf.co/pyannote/speaker-diarization-3.1")
+            print("2. https://hf.co/pyannote/segmentation-3.0")
+            print('3. https://hf.co/pyannote/speaker-diarization-community-1')
+            print("Also, ensure your HF_TOKEN in .env is valid: https://hf.co/settings/tokens")
+        else:
+            print(f"❌ Failed to load pyannote pipeline: {e}")
+        return split_audio_vad(audio_path)
+    
+    print(f"🛰️ Processing diarization (full audio)...")
+    try:
+        diarization = pipeline(audio_path)
+    except Exception as e:
+        print(f"❌ Diarization failed: {e}")
+        return split_audio_vad(audio_path)
+    
+    # Handle both Annotation (older) and DiarizeOutput (newer) types
+    annotation = diarization
+    if hasattr(diarization, "speaker_diarization"):
+        annotation = diarization.speaker_diarization
+
+    segments = []
+    speaker_samples = {} # spk_id -> [AudioSegment]
+    
+    audio = AudioSegment.from_file(audio_path)
+    
+    for turn, _, speaker in annotation.itertracks(yield_label=True):
+        start_ms = int(turn.start * 1000)
+        end_ms = int(turn.end * 1000)
+        segments.append({"start": start_ms, "end": end_ms, "spk": speaker})
+        
+        # Collect samples for unique speakers from the first 10 minutes
+        if start_ms < 600000: # 10 minutes
+            if speaker not in speaker_samples:
+                speaker_samples[speaker] = []
+            
+            dur = end_ms - start_ms
+            if dur > 3000 and sum(len(s) for s in speaker_samples[speaker]) < 10000:
+                speaker_samples[speaker].append(audio[start_ms:end_ms])
+
+    # Export speaker samples
+    for spk, chunks in speaker_samples.items():
+        if chunks:
+            sample_audio = chunks[0]
+            for c in chunks[1:]: sample_audio += c
+            sample_audio = sample_audio[:10000] # Max 10s
+            sample_path = os.path.join(sermon_dir, f"{name_to_slug(spk)}.mp3")
+            sample_audio.export(sample_path, format="mp3")
+            print(f"🎙️ Saved speaker sample: {sample_path}")
+            
+    return segments
+
+
+def name_to_slug(name: str) -> str:
+    return name.lower().replace(" ", "_").replace("speaker_", "speaker")
+
+
+def split_by_speaker(lyric_path: str, sermon_dir: str):
+    """Split the lyric file into individual speaker files."""
+    if not os.path.exists(lyric_path): return
+    
+    speaker_files = {} # spk -> list of lines
+    
+    with open(lyric_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            # Format: [HH:MM:SS.mmm --> HH:MM:SS.mmm] SPEAKER: Content
+            match = re.search(r'\] (.*?): (.*)', line)
+            if match:
+                spk = match.group(1).strip()
+                content = match.group(2).strip()
+                if spk not in speaker_files:
+                    speaker_files[spk] = []
+                speaker_files[spk].append(content)
+    
+    for spk, lines in speaker_files.items():
+        spk_slug = name_to_slug(spk)
+        spk_path = os.path.join(sermon_dir, f"transcript_{spk_slug}.txt")
+        with open(spk_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"📝 Saved speaker transcript: {spk_path}")
 
 
 def process_sermon(audio_path: str) -> None:
@@ -101,6 +218,10 @@ def process_sermon(audio_path: str) -> None:
     # Preprocess
     audio_path = preprocess_audio(audio_path)
 
+    # 1. Diarization (pyannote.audio)
+    print(f"🎙️ Diarizing: {audio_path}")
+    speaker_segments = run_diarization(audio_path, sermon_dir)
+    
     # 2. Sequential processing
     lyric_tmp = os.path.join(sermon_dir, 'transcript_tmp.lrc.txt')
     zh_tmp = os.path.join(sermon_dir, 'transcript_refine_tmp.txt')
@@ -111,18 +232,19 @@ def process_sermon(audio_path: str) -> None:
     for f in [lyric_tmp, zh_tmp, whisper_tmp, pinyin_log, rag_log]:
         safe_remove(f)
 
-    segments = split_audio_vad(audio_path)
     audio = AudioSegment.from_file(audio_path)
 
     # Group segments into blocks to maintain context (max ~30s per block)
+    # We use speaker segments from diarization instead of VAD
     max_block_ms = 30000
     blocks = []
     current_block = []
     current_block_ms = 0
 
-    for seg in segments:
+    for seg in speaker_segments:
         dur = seg['end'] - seg['start']
-        if current_block_ms + dur > max_block_ms and current_block:
+        # Also break block if speaker changes
+        if (current_block_ms + dur > max_block_ms or (current_block and current_block[-1]['spk'] != seg['spk'])) and current_block:
             blocks.append(current_block)
             current_block = []
             current_block_ms = 0
@@ -141,7 +263,6 @@ def process_sermon(audio_path: str) -> None:
     device = "mps" if torch.backends.mps.is_available() else "cpu"
 
     print("🚀 Loading Whisper-turbo model (GPU not supported for faster-whisper on Mac, using CPU)...")
-    # ctranslate2 (faster-whisper) doesn't support MPS yet
     whisper_model = WhisperModel("deepdml/faster-whisper-large-v3-turbo-ct2", device="cpu", compute_type="int8")
 
     print(f"🚀 Loading SenseVoiceSmall model on {device}...")
@@ -157,10 +278,11 @@ def process_sermon(audio_path: str) -> None:
     for idx, block in enumerate(blocks):
         block_start = block[0]['start']
         block_end = block[-1]['end']
-        print(f"\n📦 Processing block {idx+1}/{len(blocks)} ({block_start/1000:.1f}s - {block_end/1000:.1f}s)")
+        speaker = block[0]['spk']
+        print(f"\n📦 Processing block {idx+1}/{len(blocks)} [{speaker}] ({block_start/1000:.1f}s - {block_end/1000:.1f}s)")
 
         refined_block, lyric_segments = process_block(
-            block, audio, whisper_model, sensevoice_model, preacher_metadata, sermon_dir
+            block, audio, whisper_model, sensevoice_model, preacher_metadata, sermon_dir, speaker
         )
 
         all_lyric_segments.extend(lyric_segments)
@@ -174,10 +296,14 @@ def process_sermon(audio_path: str) -> None:
     # Finalize
     safe_replace(zh_tmp, final_zh)
     safe_replace(lyric_tmp, final_lyric)
+    
+    # Split by speaker
+    split_by_speaker(final_lyric, sermon_dir)
+    
     print(f"✅ Saved transcript and lyric files.")
 
 
-def process_block(block: list[dict], audio: AudioSegment, whisper_model, sensevoice_model, preacher_metadata: dict, sermon_dir: str) -> tuple[str, list[str]]:
+def process_block(block: list[dict], audio: AudioSegment, whisper_model, sensevoice_model, preacher_metadata: dict, sermon_dir: str, speaker: str) -> tuple[str, list[str]]:
     """Process a single block of audio: transcribe, cross-ref, and refine."""
     block_start = block[0]['start']
     block_end = block[-1]['end']
@@ -209,10 +335,10 @@ def process_block(block: list[dict], audio: AudioSegment, whisper_model, sensevo
                 text = cross_reference_segment(block_audio, s.start, s.end, text, sensevoice_model, preacher_metadata)
 
             safe_write(whisper_log, text)
-            lyric_segments.append(f"[{format_timestamp(abs_start)} --> {format_timestamp(abs_end)}] {text}")
+            lyric_segments.append(f"[{format_timestamp(abs_start)} --> {format_timestamp(abs_end)}] {speaker}: {text}")
             block_text += text + " "
 
-        refined_block = refine_chunk(block_text, preacher_metadata, sermon_dir)
+        refined_block = refine_chunk(block_text, preacher_metadata, sermon_dir, speaker)
         return refined_block, lyric_segments
 
     finally:
@@ -262,7 +388,7 @@ def format_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
-def refine_chunk(text: str, preacher_metadata: dict, sermon_dir: str = None) -> str:
+def refine_chunk(text: str, preacher_metadata: dict, sermon_dir: str = None, speaker: str = "SPEAKER_00") -> str:
     """Refine a chunk of text using Bible RAG and LLM."""
     if not text.strip(): return ""
 
@@ -276,6 +402,7 @@ def refine_chunk(text: str, preacher_metadata: dict, sermon_dir: str = None) -> 
     # 2. Refine with LLM
     prompt = f"""
     Refine the following Chinese sermon transcript segment.
+    SPEAKER: {speaker}
     PREACHER PROFILE: {json.dumps(preacher_metadata, ensure_ascii=False)}
     BIBLE CONTEXT (CUV): {bible_verses}
 
@@ -284,13 +411,14 @@ def refine_chunk(text: str, preacher_metadata: dict, sermon_dir: str = None) -> 
     2. Maintain the preacher's original style and tone.
     3. Remove stammers, fillers, and duplicated phrases or sentences with similar meanings.
     4. Ensure smooth flow between sentences.
+    5. Output the refined text prefixed with the speaker label, e.g., "{speaker}: refined text..."
 
     Segment: {text}
 
-    Output JSON: {{"data": "refined text..."}}
+    Output JSON: {{"data": "{speaker}: refined text..."}}
     """
     res = ask_llm(prompt)
-    return res.get("data") or text
+    return res.get("data") or f"{speaker}: {text}"
 
 
 def judge_transcriptions(text_whisper: str, text_sensevoice: str, preacher_metadata: dict) -> str:
