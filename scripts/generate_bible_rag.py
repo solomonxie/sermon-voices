@@ -27,6 +27,8 @@ BOOK_MAP = {
     "3jn": "约翰三书", "jd": "犹大书", "rv": "启示录"
 }
 
+EMBED_MODEL = "nomic-embed-text" # Specialized embedding model
+
 def get_pinyin(text: str) -> str:
     """Convert Chinese text to Pinyin without tones, joining with empty string."""
     py_list = pinyin(text, style=Style.NORMAL)
@@ -37,7 +39,7 @@ def setup_db() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
     # Verses table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS verses (
@@ -46,11 +48,19 @@ def setup_db() -> sqlite3.Connection:
         chapter INTEGER,
         verse INTEGER,
         text TEXT,
-        pinyin TEXT
+        pinyin TEXT,
+        embedding BLOB
     )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_pinyin ON verses(pinyin)')
-    
+
+    # Migration: Add embedding column if missing
+    cursor.execute("PRAGMA table_info(verses)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'embedding' not in columns:
+        print("  - Adding 'embedding' column to verses table...")
+        cursor.execute("ALTER TABLE verses ADD COLUMN embedding BLOB")
+
     # Hotwords table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS hotwords (
@@ -61,7 +71,7 @@ def setup_db() -> sqlite3.Connection:
     )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_hotword_pinyin ON hotwords(pinyin)')
-    
+
     conn.commit()
     return conn
 
@@ -74,10 +84,25 @@ def download_bible() -> list:
     content = response.text.lstrip('\ufeff')
     return json.loads(content)
 
+def generate_embedding(text: str) -> list[float]:
+    """Generate semantic embedding for text using Ollama."""
+    import ollama
+    try:
+        res = ollama.embeddings(model=EMBED_MODEL, prompt=text)
+        return res.get("embedding", [])
+    except Exception as e:
+        print(f"⚠️ Embedding error: {e}")
+        return []
+
 def insert_bible(conn: sqlite3.Connection, bible_data: list):
-    """Insert Bible verses into database."""
-    print("Inserting Bible verses and generating pinyin...")
+    """Insert Bible verses into database with pinyin and embeddings."""
+    print(f"Inserting Bible verses and generating pinyin/embeddings (Model: {EMBED_MODEL})...")
     cursor = conn.cursor()
+    import pickle
+
+    total_verses = sum(len(c) for b in bible_data for c in b['chapters'])
+    count = 0
+
     for book_data in bible_data:
         abbrev = book_data['abbrev'].lower()
         book_name = BOOK_MAP.get(abbrev, abbrev)
@@ -85,13 +110,21 @@ def insert_bible(conn: sqlite3.Connection, bible_data: list):
             chapter_num = chapter_idx + 1
             for verse_idx, verse_text in enumerate(chapter_verses):
                 verse_num = verse_idx + 1
-                # Clean up verse text (sometimes has extra spaces)
                 clean_text = re.sub(r'\s+', '', verse_text)
                 py = get_pinyin(clean_text)
+
+                # Generate embedding
+                emb = generate_embedding(clean_text)
+                emb_blob = pickle.dumps(emb) if emb else None
+
                 cursor.execute(
-                    'INSERT INTO verses (book, chapter, verse, text, pinyin) VALUES (?, ?, ?, ?, ?)',
-                    (book_name, chapter_num, verse_num, clean_text, py)
+                    'INSERT INTO verses (book, chapter, verse, text, pinyin, embedding) VALUES (?, ?, ?, ?, ?, ?)',
+                    (book_name, chapter_num, verse_num, clean_text, py, emb_blob)
                 )
+                count += 1
+                if count % 100 == 0:
+                    print(f"  - Progress: {count}/{total_verses} verses indexed...")
+                    conn.commit()
     conn.commit()
 
 def insert_hotwords(conn: sqlite3.Connection):
@@ -111,25 +144,53 @@ def insert_hotwords(conn: sqlite3.Connection):
                         )
     conn.commit()
 
+def update_embeddings(conn: sqlite3.Connection, limit: int = None):
+    """Update missing embeddings for existing verses."""
+    print("Updating missing embeddings...")
+    cursor = conn.cursor()
+    import pickle
+
+    query = "SELECT id, text FROM verses WHERE embedding IS NULL"
+    if limit:
+        query += f" LIMIT {limit}"
+
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    print(f"  - Found {len(rows)} verses needing embeddings.")
+
+    count = 0
+    for row in rows:
+        vid, text = row
+        emb = generate_embedding(text)
+        if emb:
+            emb_blob = pickle.dumps(emb)
+            cursor.execute("UPDATE verses SET embedding = ? WHERE id = ?", (emb_blob, vid))
+            count += 1
+            if count % 100 == 0:
+                print(f"  - Updated {count}/{len(rows)} embeddings...")
+                conn.commit()
+    conn.commit()
+    print(f"✅ Updated {count} embeddings.")
+
 def main():
     conn = setup_db()
     try:
-        # Check if already populated
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM verses')
         if cursor.fetchone()[0] == 0:
             bible_data = download_bible()
             insert_bible(conn, bible_data)
         else:
-            print("Bible already exists in DB.")
-            
+            print("Bible verses already exist. Checking for missing embeddings...")
+            update_embeddings(conn) # No limit for full generation
+
         cursor.execute('SELECT COUNT(*) FROM hotwords')
         if cursor.fetchone()[0] == 0:
             insert_hotwords(conn)
         else:
             print("Hotwords already exist in DB.")
-            
-        print(f"✅ Bible RAG generated at {DB_PATH}")
+
+        print(f"✅ Bible RAG status checked at {DB_PATH}")
     finally:
         conn.close()
 
