@@ -1,52 +1,46 @@
-
 import os
 import torch
-from funasr import AutoModel
+from pyannote.audio import Pipeline
 from pydub import AudioSegment
-import tempfile
+from dotenv import load_dotenv
 
-# Set environment variables
-os.environ["MODELSCOPE_CACHE"] = os.path.expanduser('~/llm_models/modelscope')
+# 1. Setup
+load_dotenv()
+access_token = os.getenv("HF_TOKEN")
 
-def test_diarization(audio_path):
-    print(f"Loading diarization model...")
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    model = AutoModel(
-        model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        vad_model="iic/speech_fsmn_vad_zh-cn_16k_common",
-        punc_model="iic/punc_ct-transformer_zh-cn-common",
-        spk_model="iic/speech_campplus_sv_zh-cn_16k-common",
-        device=device,
-        disable_update=True
-    )
+audio_file = "/Users/solomonxie/workspace/personal/sermon-voices/output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/original_cleaned.wav"
+pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=access_token)
+
+# Send to GPU if available
+device = torch.device("mps")
+pipeline.to(device)
+
+# 2. Run Diarization
+# Forcing num_speakers=2 improves accuracy for sermons
+diarization = pipeline(audio_file, max_speakers=2)
+
+# 3. Process and Save
+audio = AudioSegment.from_wav(audio_file)
+speaker_bins = {}
+
+annotation = diarization
+if hasattr(diarization, "speaker_diarization"):
+    annotation = diarization.speaker_diarization
+
+for segment, _, speaker in annotation.itertracks(yield_label=True):
+    # pyannote uses seconds; pydub uses milliseconds
+    start_ms = segment.start * 1000
+    end_ms = segment.end * 1000
     
-    # Load first 30 seconds for quick test
-    audio = AudioSegment.from_file(audio_path)
-    sample_ms = 30 * 1000 
-    sample_audio = audio[:sample_ms]
+    excerpt = audio[start_ms:end_ms]
     
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-        sample_audio.export(tf.name, format="wav")
-        tmp_path = tf.name
-        
-    print(f"Running diarization on {tmp_path}...")
-    try:
-        res = model.generate(input=tmp_path, batch_size_s=300)
-        print("Diarization Result:", res)
-        if res and "sentence_info" in res[0]:
-            print("Found sentence_info with speaker labels!")
-            for sentence in res[0]["sentence_info"]:
-                print(f"[{sentence['start']}-{sentence['end']}] Spk {sentence.get('spk', '??')}: {sentence['text']}")
-    except Exception as e:
-        print(f"Diarization failed: {e}")
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    if speaker not in speaker_bins:
+        speaker_bins[speaker] = AudioSegment.empty()
+    
+    speaker_bins[speaker] += excerpt
 
-if __name__ == "__main__":
-    # Use an existing audio file for testing if possible
-    test_audio = "output/stephen-tong/ephesians/001_ephesians/original.mp3"
-    if os.path.exists(test_audio):
-        test_diarization(test_audio)
-    else:
-        print(f"Test audio not found: {test_audio}")
+# 4. Export
+for speaker, combined_audio in speaker_bins.items():
+    output_filename = audio_file.replace('.wav', f'_{speaker}.wav')
+    combined_audio.export(output_filename, format="wav")
+    print(f"Saved: {output_filename}")

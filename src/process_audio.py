@@ -133,7 +133,14 @@ def run_diarization(audio_path: str, sermon_dir: str) -> list[dict]:
     
     print(f"🛰️ Processing diarization (full audio)...")
     try:
-        diarization = pipeline(audio_path)
+        # Tune hyperparameters for better merging of same person
+        params = {
+            "clustering": {"method": "centroid", "threshold": 0.8},
+        }
+        pipeline.instantiate(params)
+        
+        # Run diarization with speaker constraints
+        diarization = pipeline(audio_path, min_speakers=1, max_speakers=3)
     except Exception as e:
         print(f"❌ Diarization failed: {e}")
         return split_audio_vad(audio_path)
@@ -144,33 +151,63 @@ def run_diarization(audio_path: str, sermon_dir: str) -> list[dict]:
         annotation = diarization.speaker_diarization
 
     segments = []
-    speaker_samples = {} # spk_id -> [AudioSegment]
+    speaker_segments_pool = {} # spk_id -> list of (duration, AudioSegment)
     
     audio = AudioSegment.from_file(audio_path)
     
     for turn, _, speaker in annotation.itertracks(yield_label=True):
         start_ms = int(turn.start * 1000)
         end_ms = int(turn.end * 1000)
+        dur = end_ms - start_ms
+        
+        # DEBUG
+        with open(os.path.join(sermon_dir, "debug_diarization.log"), "a", encoding="utf-8") as lf:
+            lf.write(f"Segment: {start_ms} - {end_ms} ({dur}ms) SPK: {speaker}\n")
+        
+        # Filter out micro-segments or zero-length segments
+        if dur < 500: continue
+        
         segments.append({"start": start_ms, "end": end_ms, "spk": speaker})
         
-        # Collect samples for unique speakers from the first 10 minutes
         if start_ms < 600000: # 10 minutes
-            if speaker not in speaker_samples:
-                speaker_samples[speaker] = []
-            
-            dur = end_ms - start_ms
-            if dur > 3000 and sum(len(s) for s in speaker_samples[speaker]) < 10000:
-                speaker_samples[speaker].append(audio[start_ms:end_ms])
+            if speaker not in speaker_segments_pool:
+                speaker_segments_pool[speaker] = []
+            speaker_segments_pool[speaker].append((dur, audio[start_ms:end_ms]))
 
-    # Export speaker samples
-    for spk, chunks in speaker_samples.items():
-        if chunks:
-            sample_audio = chunks[0]
-            for c in chunks[1:]: sample_audio += c
-            sample_audio = sample_audio[:10000] # Max 10s
+    # Export speaker samples using best available segments
+    debug_msg = f"🎙️ Found {len(speaker_segments_pool)} speakers in first 10 minutes: {list(speaker_segments_pool.keys())}"
+    print(debug_msg)
+    with open(os.path.join(sermon_dir, "debug_diarization.log"), "a", encoding="utf-8") as lf:
+        lf.write(debug_msg + "\n")
+    
+    for spk, pool in speaker_segments_pool.items():
+        if not pool: continue
+        
+        # Sort by duration descending to get the cleanest/longest continuous speech
+        pool.sort(key=lambda x: x[0], reverse=True)
+        
+        sample_audio = None
+        current_dur = 0
+        max_sample_ms = 10000 
+        
+        for dur, chunk in pool:
+            if current_dur >= max_sample_ms: break
+            
+            # Add chunk, potentially trimming if it goes over max
+            if current_dur + dur > max_sample_ms:
+                chunk = chunk[:max_sample_ms - current_dur]
+                dur = len(chunk)
+            
+            if sample_audio is None:
+                sample_audio = chunk
+            else:
+                sample_audio += chunk
+            current_dur += dur
+            
+        if sample_audio and len(sample_audio) >= 500: # At least 0.5s
             sample_path = os.path.join(sermon_dir, f"{name_to_slug(spk)}.mp3")
             sample_audio.export(sample_path, format="mp3")
-            print(f"🎙️ Saved speaker sample: {sample_path}")
+            print(f"🎙️ Saved speaker sample: {sample_path} ({len(sample_audio)/1000:.1f}s)")
             
     return segments
 
