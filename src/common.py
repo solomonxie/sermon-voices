@@ -49,6 +49,9 @@ def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: f
                 "temperature": temperature,
                 "show_think": True,
                 "num_ctx": num_ctx,
+                # "num_thread": 4,
+                # Ollama on M1/Metal handles GPU acceleration automatically.
+                # Removing num_thread allows the server to optimize for hardware.
             }
         )
     except Exception as e:
