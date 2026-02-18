@@ -39,7 +39,7 @@ def retry(retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)
 
 
 @retry(retries=3, delay=2.0)
-def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: float = 0.0) -> dict:
+def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: float = 0.0, log_path: str = None) -> dict:
     try:
         response = ollama.generate(
             model=model or DEFAULT_MODEL,
@@ -49,9 +49,6 @@ def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: f
                 "temperature": temperature,
                 "show_think": True,
                 "num_ctx": num_ctx,
-                # "num_thread": 4,
-                # Ollama on M1/Metal handles GPU acceleration automatically.
-                # Removing num_thread allows the server to optimize for hardware.
             }
         )
     except Exception as e:
@@ -70,6 +67,12 @@ def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: f
     # Basic cleanup for common LLM JSON mishaps
     content = content.replace('“', '"').replace('”', '"')
 
+    # Logging
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*50}\nPROMPT:\n{prompt}\n{'-'*50}\nRESPONSE:\n{content}\n{'='*50}\n")
+
     try:
         return json.loads(content)
     except Exception as e:
@@ -78,7 +81,7 @@ def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: f
 
 
 @retry(retries=3, delay=2.0)
-def ask_openai(prompt: str, model: str = None, temperature: float = 0.0) -> dict:
+def ask_openai(prompt: str, model: str = None, temperature: float = 0.0, log_path: str = None) -> dict:
     global OPENAI_CLIENT
     if not OPENAI_CLIENT:
         if os.getenv("OPENAI_API_KEY"):
@@ -104,6 +107,12 @@ def ask_openai(prompt: str, model: str = None, temperature: float = 0.0) -> dict
     if match:
         content = match.group(0)
     content = content.replace('“', '"').replace('”', '"')
+
+    # Logging
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*50}\nPROMPT (OpenAI):\n{prompt}\n{'-'*50}\nRESPONSE:\n{content}\n{'='*50}\n")
 
     try:
         return json.loads(content)
