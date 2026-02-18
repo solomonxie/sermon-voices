@@ -1,12 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.pytest_cache/
+.env
+
+# OS
+.DS_Store
+
+# Project Data
+models/
 blobs/*
 !blobs/README.md
-output/*/
-output/*.db
+
+# Output Directory
+output/*
 !output/*.md
 !output/*.txt
-.DS_Store
-*.pyc
-venv/*
-models/*
-.pytest_cache/*
-.env

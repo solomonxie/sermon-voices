@@ -4,7 +4,6 @@ import json
 import sqlite3
 import argparse
 import subprocess
-from glob import glob
 from datetime import timedelta
 
 import torch
@@ -15,13 +14,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.common import ask_llm, safe_remove
-from src.constants import OUTPUT_ROOT, BOOK_MAP, BIBLE_EN_TO_ZH, ZH_TO_ABBREV_MAP
+from src.constants import BIBLE_EN_TO_ZH, ZH_TO_ABBREV_MAP
 
 # Audio processing config
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["MODELSCOPE_CACHE"] = os.path.expanduser('~/llm_models/modelscope')
 BIBLE_DB_PATH = "output/bible_rag.db"
-BIBLE_CACHE = None  # (embeddings, texts, pinyin_texts)
 
 def main(audio_path) -> None:
 
@@ -129,11 +127,11 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
 
     full_refined_text = []
 
+    chunk_wav = os.path.join(sermon_dir, "chunk_tmp.wav")
     for i, (start_ms, end_ms) in enumerate(chunks):
         print(f"\n📦 Chunk {i+1}/{len(chunks)} ({start_ms/1000:.1f}s - {end_ms/1000:.1f}s)")
         
         chunk_audio = audio[start_ms:end_ms]
-        chunk_wav = os.path.join(sermon_dir, f"chunk_{i}.wav")
         chunk_audio.export(chunk_wav, format="wav")
         
         # 3.1 Transcribe
@@ -160,7 +158,10 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
 
 def error_picking(text: str, metadata: dict, sermon_dir: str, log_path: str) -> str:
     """Identify and fix obvious ASR errors using context and Bible RAG."""
-    bible_context = bible_lookup_hybrid(text, sermon_dir, scripture_ref=metadata.get('scripture'))
+    if not text or len(text.strip()) < 2:
+        return text
+
+    bible_context = get_bible_verses_by_ref(scripture_ref=metadata.get('scripture'))
     
     prompt = f"""
     Identify and fix obvious ASR transcription errors in this sermon segment.
@@ -179,14 +180,24 @@ def error_picking(text: str, metadata: dict, sermon_dir: str, log_path: str) -> 
     2. Correct names and locations based on the preacher profile.
     3. Keep the text as literal as possible to what was spoken, just fixed.
     4. Return ONLY the corrected text.
+    5. If the segment is too short, contains only noise, or no errors are found, return the original text as is.
     
     Output JSON: {{"data": "corrected text..."}}
     """
     res = ask_llm(prompt, log_path=log_path)
-    return res.get("data") or text
+    corrected = res.get("data")
+    
+    # Fallback if LLM returns a failure message, empty, or un-parsable result
+    if not corrected or "无法识别" in corrected or "内容缺失" in corrected or len(corrected.strip()) == 0:
+        return text
+        
+    return corrected
 
 def refine_text(text: str, metadata: dict, sermon_dir: str, log_path: str) -> str:
     """Polish the text for better flow and style."""
+    if not text or len(text.strip()) < 2:
+        return text
+
     prompt = f"""
     Refine and polish this sermon segment for publication.
     
@@ -204,11 +215,17 @@ def refine_text(text: str, metadata: dict, sermon_dir: str, log_path: str) -> st
     3. Ensure consistency with biblical terminology.
     4. Return ONLY the refined text.
     5. Keep original language (mandarin)
+    6. If the segment contains no meaningful content or cannot be refined, return the original text as is.
     
     Output JSON: {{"data": "refined text..."}}
     """
     res = ask_llm(prompt, log_path=log_path)
-    return res.get("data") or text
+    refined = res.get("data")
+
+    if not refined or len(refined.strip()) == 0:
+        return text
+
+    return refined
 
 def format_timestamp(seconds: float) -> str:
     """Format seconds to HH:MM:SS.mmm"""
@@ -220,88 +237,46 @@ def format_timestamp(seconds: float) -> str:
     millis = int(td.microseconds / 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
-# --- Bible RAG Utility Functions ---
+def get_bible_verses_by_ref(scripture_ref: str | None = None) -> str:
+    """
+    Retrieves Bible verses based on a scripture reference.
+    e.g. "John ch3:v16", "Jude ch1"
+    """
+    if not scripture_ref or not os.path.exists(BIBLE_DB_PATH):
+        return ""
 
-def load_bible_cache():
-    global BIBLE_CACHE
-    if BIBLE_CACHE is not None: return
-    if not os.path.exists(BIBLE_DB_PATH): return
+    # Parse reference: "Book chChapter:vVerse" or "Book chChapter"
+    match = re.match(r"^(.*?)(?:\s+ch(\d+))?(?::v(\d+))?$", scripture_ref)
+    if not match:
+        return ""
+    
+    book_en, chapter, verse = match.groups()
+    book_en = ' '.join(book_en.strip().split()) # Normalize spaces
+    book_zh = BIBLE_EN_TO_ZH.get(book_en)
+    if not book_zh:
+        return ""
+    
+    abbrev = ZH_TO_ABBREV_MAP.get(book_zh)
 
-    import numpy as np
-    import pickle
     conn = sqlite3.connect(BIBLE_DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT book, chapter, verse, text, pinyin, embedding FROM verses WHERE embedding IS NOT NULL")
+    
+    query = "SELECT book, chapter, verse, text FROM verses WHERE (book = ? OR book = ?)"
+    params = [book_zh, abbrev]
+    
+    if chapter:
+        query += " AND chapter = ?"
+        params.append(chapter)
+    if verse:
+        query += " AND verse = ?"
+        params.append(verse)
+        
+    cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
 
-    embeddings, metadata = [], []
-    for r in rows:
-        book, chap, ver, txt, py, emb_blob = r
-        embeddings.append(np.array(pickle.loads(emb_blob)))
-        metadata.append({"ref": f"{book} {chap}:{ver}", "text": txt, "pinyin": py})
-    BIBLE_CACHE = (np.array(embeddings), metadata)
-
-def bible_lookup_hybrid(text: str, sermon_dir: str = None, scripture_ref: str = None) -> str:
-    if not text.strip(): return ""
-    load_bible_cache()
-    if not BIBLE_CACHE: return ""
-
-    import numpy as np
-    from scripts.generate_bible_rag import generate_embedding, get_pinyin
-    from src.common import string_similarity
-
-    embeddings, metadata = BIBLE_CACHE
-    
-    # Filter by scripture reference if provided
-    if scripture_ref:
-        # Parse scripture_ref (e.g., "Romans ch1:v1", "Ephesians ch1", "1 Corinthians 13")
-        match = re.match(r"([\d\s\w]+)\s*(?:ch(\d+))?(?::v(\d+))?", scripture_ref, re.IGNORECASE)
-        if match:
-            book_name_en, chapter, verse = match.groups()
-            book_name_en = book_name_en.strip()
-            
-            # Normalize book name (e.g., "1 Corinthians" -> "1 Corinthians")
-            book_name_en_normalized = ' '.join(book_name_en.split())
-            book_name_zh = BIBLE_EN_TO_ZH.get(book_name_en_normalized)
-            abbrev = ZH_TO_ABBREV_MAP.get(book_name_zh)
-
-            if book_name_zh:
-                filtered_indices = []
-                for i, meta in enumerate(metadata):
-                    # Parse meta['ref'] (e.g., "创世记 1:1", "1co 1:1")
-                    ref_match = re.match(r"^(.*?)\s+(\d+):(\d+)$", meta['ref'])
-                    if ref_match:
-                        b, c, v = ref_match.groups()
-                        if (b == book_name_zh or b == abbrev) and \
-                           (not chapter or c == chapter) and \
-                           (not verse or v == verse):
-                            filtered_indices.append(i)
-                
-                if filtered_indices:
-                    embeddings = embeddings[filtered_indices]
-                    metadata = [metadata[i] for i in filtered_indices]
-
-    query_emb = generate_embedding(text[:500])
-    if not query_emb: return ""
-    query_vec = np.array(query_emb)
-
-    norms = np.linalg.norm(embeddings, axis=1) * np.linalg.norm(query_vec)
-    similarities = np.dot(embeddings, query_vec) / (norms + 1e-9)
-
-    top_indices = np.argsort(similarities)[-50:][::-1]
-    candidates = [(similarities[i], metadata[i]) for i in top_indices]
-
-    query_py = get_pinyin(re.sub(r'[^\w\s]', '', text).strip())
-    reranked = []
-    for sim_sem, meta in candidates:
-        sim_py = string_similarity(query_py, meta['pinyin']) if query_py and meta['pinyin'] else 0.0
-        final_score = (sim_sem * 0.4) + (sim_py * 0.6)
-        reranked.append((final_score, meta))
-
-    reranked.sort(key=lambda x: x[0], reverse=True)
-    top_verses = [f"{r[1]['ref']} - \"{r[1]['text']}\"" for r in reranked[:5] if r[0] > 0.2]
-    return "; ".join(top_verses)
+    results = [f"{b} {c}:{v} - \"{t}\"" for b, c, v, t in rows]
+    return "; ".join(results)
 
 
 if __name__ == '__main__':
