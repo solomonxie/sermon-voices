@@ -1,48 +1,37 @@
 import pytest
-from src.process_audio import bible_lookup_hybrid
+from src.process_audio import get_bible_verses_by_ref
 
-def test_bible_lookup_with_scripture_ref():
+def test_get_bible_verses_by_ref_single_verse():
     """
-    Tests the bible_lookup_hybrid function with a specific scripture reference
-    to ensure it correctly filters the search.
+    Tests get_bible_verses_by_ref with a specific single verse reference.
     """
-    text = "神爱世人，甚至将他的独生子赐给他们"
     scripture_ref = "John ch3:v16"
-    
-    # This requires the bible rag db to be generated.
-    # The test will fail if it's not present.
-    result = bible_lookup_hybrid(text, scripture_ref=scripture_ref)
-    
-    # We expect to see John 3:16 in the results.
-    assert "约翰福音 3:16" in result
-    
-    # We don't expect to see many other verses.
-    # This is a bit brittle, but for a first pass it's ok.
-    # With a specific reference, the result should be very precise.
-    result_list = [r for r in result.split(';') if r.strip()]
-    assert len(result_list) <= 2
+    result = get_bible_verses_by_ref(scripture_ref=scripture_ref)
+    expected = '约翰福音 3:16 - "「神愛世人，甚至將他的獨生子賜給他們，叫一切信他的，不至滅亡，反得永生。"'
+    assert expected in result
 
-def test_bible_lookup_without_scripture_ref():
+def test_get_bible_verses_by_ref_chapter():
     """
-    Tests the bible_lookup_hybrid function without a scripture reference
-    to ensure it still returns relevant results from the whole Bible.
+    Tests get_bible_verses_by_ref with a chapter reference.
     """
-    text = "神爱世人，甚至将他的独生子赐给他们"
-    
-    result = bible_lookup_hybrid(text)
-    
-    assert "约翰福音 3:16" in result
+    scripture_ref = "Jude ch1"
+    result = get_bible_verses_by_ref(scripture_ref=scripture_ref)
+    # Jude only has one chapter, so it should return all verses.
+    # I will just check for a few verses.
+    assert "犹大书 1:1" in result
+    assert "犹大书 1:25" in result
 
-def test_bible_lookup_chapter_only_ref():
+def test_get_bible_verses_by_ref_no_ref():
     """
-    Tests the bible_lookup_hybrid function with a chapter-only scripture reference.
+    Tests get_bible_verses_by_ref with no scripture reference.
     """
-    text = "爱是恒久忍耐，又有恩慈"
-    scripture_ref = "1 Corinthians ch13"
-    
-    result = bible_lookup_hybrid(text, scripture_ref=scripture_ref)
-    
-    assert "哥林多前书 13:4" in result
-    
-    # Check if other verses from the same chapter are also found
-    assert "哥林多前书 13:" in result
+    result = get_bible_verses_by_ref(scripture_ref=None)
+    assert result == ""
+
+def test_get_bible_verses_by_ref_invalid_ref():
+    """
+    Tests get_bible_verses_by_ref with an invalid scripture reference.
+    """
+    scripture_ref = "Invalid Reference"
+    result = get_bible_verses_by_ref(scripture_ref=scripture_ref)
+    assert result == ""
