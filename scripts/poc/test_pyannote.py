@@ -1,3 +1,7 @@
+"""
+Test pyannote diarization:
+-> result: doesn't work, can't distinguish between two mandarin speakers
+"""
 import os
 import torch
 from pyannote.audio import Pipeline
@@ -17,7 +21,7 @@ pipeline.to(device)
 
 # 2. Run Diarization
 # Forcing num_speakers=2 improves accuracy for sermons
-diarization = pipeline(audio_file, max_speakers=2)
+diarization = pipeline(audio_file, num_speakers=2)
 
 # 3. Process and Save
 audio = AudioSegment.from_wav(audio_file)
