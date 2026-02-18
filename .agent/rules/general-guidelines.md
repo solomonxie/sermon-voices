@@ -6,11 +6,12 @@ trigger: always_on
 
 Welcome to the sermon-voices project. Follow these core standards to maintain consistency and quality.
 
-## Python Environment
+## Runtime
 - Version: Must use Python 3.12.
 - Virtual Environment: All operations must use the venv/ directory.
 - Executables: Always use paths like venv/bin/python or venv/bin/pip.
 - Type Hinting: Use type hints for all functions. Prefer built-in types over typing module imports where possible.
+- Environment variables: all secrets or env vars should be in .env, and each variable should have .env.example as reference
 
 ## Development Standards
 - Makefile: All primary commands (setup, processing, testing) must be reflected in the Makefile.
@@ -22,3 +23,8 @@ Welcome to the sermon-voices project. Follow these core standards to maintain co
 - Local Models: Prioritize local execution via Ollama.
 - Primary Model: qwen3:8b is the currently configured model for extraction and translation.
 
+## Folder Structure
+- All main workflow code should be under src/
+- All testing related code should be under tests/ with correct category (unit, functional, interface, smoke...)
+- All one-shot code should be under scripts/
+- Any newly introduced lib or tech stack should be tested with a single script under scripts/poc/
