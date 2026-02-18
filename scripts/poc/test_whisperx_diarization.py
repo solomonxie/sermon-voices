@@ -2,6 +2,7 @@
 POC script to test WhisperX audio diarization.
 Stack: faster-whisper, align_model, pyannote.audio (diarization)
 -> result: doesn't work, can't distinguish between two mandarin speakers
+-> and it's super super slow (on CPU, doesn't support Mac chip) takes 1 hour to process 1 hour audio
 """
 import os
 import torch
