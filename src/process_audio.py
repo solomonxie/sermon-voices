@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.common import ask_llm, safe_remove
-from src.constants import OUTPUT_ROOT
+from src.constants import OUTPUT_ROOT, BOOK_MAP, BIBLE_EN_TO_ZH, ZH_TO_ABBREV_MAP
 
 # Audio processing config
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -23,12 +23,7 @@ os.environ["MODELSCOPE_CACHE"] = os.path.expanduser('~/llm_models/modelscope')
 BIBLE_DB_PATH = "output/bible_rag.db"
 BIBLE_CACHE = None  # (embeddings, texts, pinyin_texts)
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement (Refactored)")
-    default_audio = "output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/original.mp3"
-    parser.add_argument("audio_path", nargs="?", default=default_audio, help="Path to the original.mp3 file to process")
-    args = parser.parse_args()
-    audio_path = args.audio_path
+def main(audio_path) -> None:
 
     print(f"\n--- Phase 2: Audio Transcription & Refinement (SenseVoice) ---")
     sermon_dir = os.path.dirname(audio_path)
@@ -165,7 +160,7 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
 
 def error_picking(text: str, metadata: dict, sermon_dir: str, log_path: str) -> str:
     """Identify and fix obvious ASR errors using context and Bible RAG."""
-    bible_context = bible_lookup_hybrid(text, sermon_dir)
+    bible_context = bible_lookup_hybrid(text, sermon_dir, scripture_ref=metadata.get('scripture'))
     
     prompt = f"""
     Identify and fix obvious ASR transcription errors in this sermon segment.
@@ -208,6 +203,7 @@ def refine_text(text: str, metadata: dict, sermon_dir: str, log_path: str) -> st
     2. Improve sentence structure and punctuation while keeping the preacher's original tone.
     3. Ensure consistency with biblical terminology.
     4. Return ONLY the refined text.
+    5. Keep original language (mandarin)
     
     Output JSON: {{"data": "refined text..."}}
     """
@@ -246,7 +242,7 @@ def load_bible_cache():
         metadata.append({"ref": f"{book} {chap}:{ver}", "text": txt, "pinyin": py})
     BIBLE_CACHE = (np.array(embeddings), metadata)
 
-def bible_lookup_hybrid(text: str, sermon_dir: str = None) -> str:
+def bible_lookup_hybrid(text: str, sermon_dir: str = None, scripture_ref: str = None) -> str:
     if not text.strip(): return ""
     load_bible_cache()
     if not BIBLE_CACHE: return ""
@@ -255,11 +251,41 @@ def bible_lookup_hybrid(text: str, sermon_dir: str = None) -> str:
     from scripts.generate_bible_rag import generate_embedding, get_pinyin
     from src.common import string_similarity
 
+    embeddings, metadata = BIBLE_CACHE
+    
+    # Filter by scripture reference if provided
+    if scripture_ref:
+        # Parse scripture_ref (e.g., "Romans ch1:v1", "Ephesians ch1", "1 Corinthians 13")
+        match = re.match(r"([\d\s\w]+)\s*(?:ch(\d+))?(?::v(\d+))?", scripture_ref, re.IGNORECASE)
+        if match:
+            book_name_en, chapter, verse = match.groups()
+            book_name_en = book_name_en.strip()
+            
+            # Normalize book name (e.g., "1 Corinthians" -> "1 Corinthians")
+            book_name_en_normalized = ' '.join(book_name_en.split())
+            book_name_zh = BIBLE_EN_TO_ZH.get(book_name_en_normalized)
+            abbrev = ZH_TO_ABBREV_MAP.get(book_name_zh)
+
+            if book_name_zh:
+                filtered_indices = []
+                for i, meta in enumerate(metadata):
+                    # Parse meta['ref'] (e.g., "创世记 1:1", "1co 1:1")
+                    ref_match = re.match(r"^(.*?)\s+(\d+):(\d+)$", meta['ref'])
+                    if ref_match:
+                        b, c, v = ref_match.groups()
+                        if (b == book_name_zh or b == abbrev) and \
+                           (not chapter or c == chapter) and \
+                           (not verse or v == verse):
+                            filtered_indices.append(i)
+                
+                if filtered_indices:
+                    embeddings = embeddings[filtered_indices]
+                    metadata = [metadata[i] for i in filtered_indices]
+
     query_emb = generate_embedding(text[:500])
     if not query_emb: return ""
     query_vec = np.array(query_emb)
 
-    embeddings, metadata = BIBLE_CACHE
     norms = np.linalg.norm(embeddings, axis=1) * np.linalg.norm(query_vec)
     similarities = np.dot(embeddings, query_vec) / (norms + 1e-9)
 
@@ -277,5 +303,10 @@ def bible_lookup_hybrid(text: str, sermon_dir: str = None) -> str:
     top_verses = [f"{r[1]['ref']} - \"{r[1]['text']}\"" for r in reranked[:5] if r[0] > 0.2]
     return "; ".join(top_verses)
 
+
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement (Refactored)")
+    default_audio = "output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/original.mp3"
+    parser.add_argument("audio_path", nargs="?", default=default_audio, help="Path to the original.mp3 file to process")
+    args = parser.parse_args()
+    main(args.audio_path)
