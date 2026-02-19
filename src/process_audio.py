@@ -127,6 +127,7 @@ def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, contex
             "whisperx": transcribe_with_whisperx(chunk_wav),
             "paraformer": transcribe_with_paraformer_zh(chunk_wav),
             "funasr_nano": transcribe_with_funasr_nano(chunk_wav),
+            "glm_nano": transcribe_with_glm_asr_nano(chunk_wav),
         }
         
         # 3.2 Merge transcriptions using LLM
@@ -151,15 +152,6 @@ def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, contex
         f.write("\n\n".join(full_refined_text))
 
 
-def _get_model(model_name: str, **kwargs):
-    if model_name not in MODEL_CACHE:
-        print(f"🚀 Loading {model_name} on {kwargs.get('device', DEVICE)}...")
-        if "whisper" in model_name:
-            MODEL_CACHE[model_name] = whisperx.load_model(model_name, **kwargs)
-        else:
-            MODEL_CACHE[model_name] = AutoModel(model=model_name, **kwargs)
-    return MODEL_CACHE[model_name]
-
 def transcribe_with_sensevoice(audio_path: str) -> str:
     """Transcribe with SenseVoiceSmall."""
     model = _get_model("iic/SenseVoiceSmall", device=DEVICE, disable_update=True)
@@ -170,7 +162,7 @@ def transcribe_with_whisperx(audio_path: str) -> str:
     """Transcribe with WhisperX (faster-whisper)."""
     # WhisperX doesn't support MPS, use CPU instead.
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = _get_model("base", device=device, compute_type=COMPUTE_TYPE, download_root=os.path.expanduser('~/llm_models/whisperx'))
+    model = _get_model("base", is_whisper=True, device=device, compute_type=COMPUTE_TYPE, download_root=os.path.expanduser('~/llm_models/whisperx'))
     audio = whisperx.load_audio(audio_path)
     result = model.transcribe(audio, batch_size=16)
     return result["text"].strip() if result and "text" in result else ""
@@ -183,9 +175,29 @@ def transcribe_with_paraformer_zh(audio_path: str) -> str:
     return res[0]["text"].strip() if res else ""
 
 def transcribe_with_funasr_nano(audio_path: str) -> str:
-    """Fun-ASR-Nano-2512 - Placeholder"""
-    print("⚠️ Fun-ASR-Nano-2512 model not yet implemented. Skipping.")
-    return ""
+    """Transcribe with Fun-ASR-Nano-2512."""
+    model_id = "FunAudioLLM/Fun-ASR-Nano-2512"
+    print(f"🚀 Using Fun-ASR-Nano-2512 (model: {model_id})")
+    model = _get_model(model_id, device=DEVICE, disable_update=True)
+    res = model.generate(input=audio_path, cache={})
+    return res[0]["text"].strip() if res else ""
+
+def transcribe_with_glm_asr_nano(audio_path: str) -> str:
+    """Transcribe with GLM-ASR-Nano-2512."""
+    model_id = "zai-org/GLM-ASR-Nano-2512"
+    print(f"🚀 Using GLM-ASR-Nano-2512 (model: {model_id})")
+    model = _get_model(model_id, device=DEVICE, disable_update=True)
+    res = model.generate(input=audio_path, cache={})
+    return res[0]["text"].strip() if res else ""
+
+def _get_model(model_name: str, is_whisper: bool = False, **kwargs):
+    if model_name not in MODEL_CACHE:
+        print(f"🚀 Loading {model_name} on {kwargs.get('device', DEVICE)}...")
+        if is_whisper or "whisper" in model_name:
+            MODEL_CACHE[model_name] = whisperx.load_model(model_name, **kwargs)
+        else:
+            MODEL_CACHE[model_name] = AutoModel(model=model_name, **kwargs)
+    return MODEL_CACHE[model_name]
 
 def merge_transcriptions(texts: dict, context_str: str, log_path: str) -> str:
     """Merge multiple ASR transcriptions using an LLM."""
