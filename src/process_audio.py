@@ -116,7 +116,6 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
     # Forcing CPU to ensure stability and better quality.
     device = "cpu"
     print(f"🚀 Loading SenseVoiceSmall on {device}...")
-    sv_model = AutoModel(model="iic/SenseVoiceSmall", device=device, disable_update=True)
     
     audio = AudioSegment.from_file(audio_path)
     
@@ -136,12 +135,19 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
         chunk_wav = os.path.join(sermon_dir, f"chunk_{i}.wav")
         chunk_audio.export(chunk_wav, format="wav")
         
-        # 3.1 Transcribe
-        res = sv_model.generate(input=chunk_wav, cache={}, language="zh", use_itn=True)
-        raw_text = re.sub(r'<\|.*?\|>', '', res[0]['text']).strip()
+        # 3.1 Transcribe with multiple models (TODO)
+        text1_sensevoice = transcribe_with_sensevoice(chunk_wav)
+        text2_whisper = transcribe_with_whisperx(chunk_wav)
+        text3_paraformer = transcribe_with_paraformer_zh(chunk_wav)
+        text4_funasr_nano = transcribe_with_funasr_nano(chunk_wav)
+        text5_qwen3_asr = transcribe_with_qwen3_asr(chunk_wav)
+        text6_firered_asr = transcribe_with_firered_asr(chunk_wav)
+
+        # 3.2 TODO: Merge transcription with multiple sources
+        text = merge_transcriptions([text1_sensevoice, text2_whisper, ...], context='TODO')
         
         # 3.2 Error Picking (Corrected Original Transcript)
-        corrected_text = error_picking(raw_text, metadata, sermon_dir, log_path)
+        corrected_text = error_picking(text, metadata, sermon_dir, log_path)
         
         # 3.3 Refine (Polished Text for Final Transcript)
         refined_text = refine_text(corrected_text, metadata, sermon_dir, log_path)
@@ -158,11 +164,47 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
     with open(final_zh_path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(full_refined_text))
 
+
+def transcribe_with_sensevoice(audio_path) -> str:
+    sv_model = AutoModel(model="iic/SenseVoiceSmall", device=device, disable_update=True)
+    res = sv_model.generate(input=audio_path, cache={}, language="zh", use_itn=True)
+    raw_text = re.sub(r'<\|.*?\|>', '', res[0]['text']).strip()
+    return raw_text
+
+def transcribe_with_whisperx(audio_path) -> str:
+    raw_text = ''
+    return raw_text
+
+def transcribe_with_paraformer_zh(audio_path) -> str:
+    raw_text = ''
+    return raw_text
+
+def transcribe_with_funasr_nano(audio_path) -> str:
+    """ Fun-ASR-Nano-2512 """
+    raw_text = ''
+    return raw_text
+
+def transcribe_with_qwen3_asr(audio_path) -> str:
+    """ Qwen3-ASR-0.6B """
+    raw_text = ''
+    return raw_text
+
+def transcribe_with_firered_asr(audio_path) -> str:
+    """ FireRedASR-AED """
+    raw_text = ''
+    return raw_text
+
+def merge_transcriptions(text_list: list, context: str = '') -> str:
+    text = ''
+    # TODO: ask LLM to merge texts (needs more thinking and reasoning)
+    return text
+
 def error_picking(text: str, metadata: dict, sermon_dir: str, log_path: str) -> str:
     """Identify and fix obvious ASR errors using context and Bible RAG."""
     if not text or len(text.strip()) < 2:
         return text
 
+    # TODO: move the entire context part out and pass in as argument
     bible_context = get_bible_verses_by_ref(scripture_ref=metadata.get('scripture'))
     
     prompt = f"""
