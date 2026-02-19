@@ -112,11 +112,11 @@ def vad_split(audio_path: str) -> list[tuple[int, int]]:
 
 def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon_dir: str, metadata: dict, log_path: str) -> None:
     """Workflow: transcribe -> error picking -> refine -> finalize."""
-    # MPS on macOS has issues with float64 in some FunASR models (e.g. cumsum).
-    # Forcing CPU for ASR model to ensure stability.
-    device = "cpu" 
-    print(f"🚀 Loading Paraformer-zh on {device}...")
-    asr_model = AutoModel(model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch", device=device, disable_update=True)
+    # SenseVoiceSmall is generally more accurate for this content but has MPS float64 issues.
+    # Forcing CPU to ensure stability and better quality.
+    device = "cpu"
+    print(f"🚀 Loading SenseVoiceSmall on {device}...")
+    sv_model = AutoModel(model="iic/SenseVoiceSmall", device=device, disable_update=True)
     
     audio = AudioSegment.from_file(audio_path)
     
@@ -137,8 +137,8 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
         chunk_audio.export(chunk_wav, format="wav")
         
         # 3.1 Transcribe
-        res = asr_model.generate(input=chunk_wav, batch_size_s=300)
-        raw_text = res[0]['text'].strip()
+        res = sv_model.generate(input=chunk_wav, cache={}, language="zh", use_itn=True)
+        raw_text = re.sub(r'<\|.*?\|>', '', res[0]['text']).strip()
         
         # 3.2 Error Picking (Corrected Original Transcript)
         corrected_text = error_picking(raw_text, metadata, sermon_dir, log_path)
