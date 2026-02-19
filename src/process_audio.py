@@ -5,8 +5,10 @@ import sqlite3
 import argparse
 import subprocess
 from datetime import timedelta
+from functools import lru_cache
 
 import torch
+import whisperx
 from pydub import AudioSegment
 from funasr import AutoModel
 from dotenv import load_dotenv
@@ -16,14 +18,20 @@ load_dotenv()
 from src.common import ask_llm, safe_remove
 from src.constants import BIBLE_EN_TO_ZH, ZH_TO_ABBREV_MAP
 
+# --- Globals ---
 # Audio processing config
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 os.environ["MODELSCOPE_CACHE"] = os.path.expanduser('~/llm_models/modelscope')
+os.environ["HF_HOME"] = os.path.expanduser('~/llm_models/huggingface')
 BIBLE_DB_PATH = "output/bible_rag.db"
 
-def main(audio_path) -> None:
+# Model cache
+MODEL_CACHE = {}
+DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
 
-    print(f"\n--- Phase 2: Audio Transcription & Refinement (SenseVoice) ---")
+def main(audio_path) -> None:
+    print(f"\n--- Phase 2: Audio Transcription & Refinement (Multi-ASR) ---")
     sermon_dir = os.path.dirname(audio_path)
     final_lyric = os.path.join(sermon_dir, "transcription_zh_lyric.txt")
     final_zh = os.path.join(sermon_dir, "transcript_zh.txt")
@@ -33,40 +41,21 @@ def main(audio_path) -> None:
         print(f"✅ Already processed: {final_zh}")
         return
 
-    # 0. Load Metadata Profile
-    metadata = load_sermon_context(sermon_dir)
-    print(f"📝 Loaded context: {metadata.get('preacher')} - {metadata.get('title')}")
+    # 0. Load sermon context
+    context_info = load_and_build_context(sermon_dir)
+    context_str = context_info["context_str"]
+    print(f"📝 Loaded context for: {context_info['preacher']} - {context_info['title']}")
 
-    # 1. Preprocess
+    # 1. Preprocess audio
     cleaned_audio_path = preprocess_audio(audio_path)
 
     # 2. VAD Split -> ~1min chunks
     chunks = vad_split(cleaned_audio_path)
 
-    # 3. transcribe -> error picking -> refine -> finalize
-    transcribe_and_refine(cleaned_audio_path, chunks, sermon_dir, metadata, llm_log_path)
+    # 3. Transcribe -> Merge -> Refine -> Finalize
+    transcribe_and_refine(cleaned_audio_path, chunks, sermon_dir, context_str, llm_log_path)
 
     print(f"✅ Workflow complete. Results saved to:\n   - {final_lyric}\n   - {final_zh}")
-
-def load_sermon_context(sermon_dir: str) -> dict:
-    """Load metadata.json and profile.json for LLM context."""
-    context = {}
-    
-    # Sermon-specific metadata
-    meta_path = os.path.join(sermon_dir, "metadata.json")
-    if os.path.exists(meta_path):
-        with open(meta_path, 'r', encoding='utf-8') as f:
-            context.update(json.load(f))
-            
-    # Preacher profile
-    preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
-    profile_path = os.path.join(preacher_dir, "profile.json")
-    if os.path.exists(profile_path):
-        with open(profile_path, 'r', encoding='utf-8') as f:
-            profile = json.load(f)
-            context["profile"] = profile
-            
-    return context
 
 def preprocess_audio(audio_path: str) -> str:
     """Preprocess audio using ffmpeg: noise reduction, normalization, filter."""
@@ -87,11 +76,11 @@ def preprocess_audio(audio_path: str) -> str:
 def vad_split(audio_path: str) -> list[tuple[int, int]]:
     """Split audio using FunASR FSMN-VAD into ~1min chunks."""
     print(f"🎙️ VAD splitting (FunASR)...")
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    model = AutoModel(model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch", device=device, disable_update=True)
+    vad_model = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+    model = AutoModel(model=vad_model, device=DEVICE, disable_update=True)
     
     res = model.generate(input=audio_path, batch_size_s=300)
-    segments = res[0]['value']  # [[start, end], ...] in ms
+    segments = res[0]['value'] if res else []
             
     # Group into ~1min chunks
     chunks = []
@@ -110,13 +99,8 @@ def vad_split(audio_path: str) -> list[tuple[int, int]]:
     print(f"✅ Split into {len(chunks)} chunks.")
     return chunks
 
-def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon_dir: str, metadata: dict, log_path: str) -> None:
-    """Workflow: transcribe -> error picking -> refine -> finalize."""
-    # SenseVoiceSmall is generally more accurate for this content but has MPS float64 issues.
-    # Forcing CPU to ensure stability and better quality.
-    device = "cpu"
-    print(f"🚀 Loading SenseVoiceSmall on {device}...")
-    
+def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, context_str: str, llm_log_path: str) -> None:
+    """Workflow: transcribe -> merge -> error picking -> refine -> finalize."""
     audio = AudioSegment.from_file(audio_path)
     
     final_lyric_path = os.path.join(sermon_dir, "transcription_zh_lyric.txt")
@@ -124,98 +108,129 @@ def transcribe_and_refine(audio_path: str, chunks: list[tuple[int, int]], sermon
     
     safe_remove(final_lyric_path)
     safe_remove(final_zh_path)
-    safe_remove(log_path)
+    # safe_remove(llm_log_path) # Retain LLM log across chunks
+    if os.path.exists(llm_log_path): # Clear log for new run
+        os.remove(llm_log_path)
 
     full_refined_text = []
 
     for i, (start_ms, end_ms) in enumerate(chunks):
         print(f"\n📦 Chunk {i+1}/{len(chunks)} ({start_ms/1000:.1f}s - {end_ms/1000:.1f}s)")
         
-        chunk_audio = audio[start_ms:end_ms]
         chunk_wav = os.path.join(sermon_dir, f"chunk_{i}.wav")
+        chunk_audio = audio[start_ms:end_ms]
         chunk_audio.export(chunk_wav, format="wav")
         
-        # 3.1 Transcribe with multiple models (TODO)
-        text1_sensevoice = transcribe_with_sensevoice(chunk_wav)
-        text2_whisper = transcribe_with_whisperx(chunk_wav)
-        text3_paraformer = transcribe_with_paraformer_zh(chunk_wav)
-        text4_funasr_nano = transcribe_with_funasr_nano(chunk_wav)
-        text5_qwen3_asr = transcribe_with_qwen3_asr(chunk_wav)
-        text6_firered_asr = transcribe_with_firered_asr(chunk_wav)
-
-        # 3.2 TODO: Merge transcription with multiple sources
-        text = merge_transcriptions([text1_sensevoice, text2_whisper, ...], context='TODO')
+        # 3.1 Transcribe with multiple models
+        transcriptions = {
+            "sensevoice": transcribe_with_sensevoice(chunk_wav),
+            "whisperx": transcribe_with_whisperx(chunk_wav),
+            "paraformer": transcribe_with_paraformer_zh(chunk_wav),
+            "funasr_nano": transcribe_with_funasr_nano(chunk_wav),
+        }
         
-        # 3.2 Error Picking (Corrected Original Transcript)
-        corrected_text = error_picking(text, metadata, sermon_dir, log_path)
+        # 3.2 Merge transcriptions using LLM
+        merged_text = merge_transcriptions(transcriptions, context_str, llm_log_path)
         
-        # 3.3 Refine (Polished Text for Final Transcript)
-        refined_text = refine_text(corrected_text, metadata, sermon_dir, log_path)
+        # 3.3 Error Picking (Corrected Original Transcript)
+        corrected_text = error_picking(merged_text, context_str, llm_log_path)
+        
+        # 3.4 Refine (Polished Text for Final Transcript)
+        refined_text = refine_text(corrected_text, context_str, llm_log_path)
         full_refined_text.append(refined_text)
         
-        # 3.4 Finalize Lyric (Original Corrected Text with Timestamps)
+        # 3.5 Finalize Lyric (Original Corrected Text with Timestamps)
         entry = f"[{format_timestamp(start_ms/1000)} --> {format_timestamp(end_ms/1000)}] {corrected_text}"
         with open(final_lyric_path, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
             
         safe_remove(chunk_wav)
 
-    # 3.5 Global Finalize (Plain Text Refined Transcript)
+    # 3.6 Global Finalize (Plain Text Refined Transcript)
     with open(final_zh_path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(full_refined_text))
 
 
-def transcribe_with_sensevoice(audio_path) -> str:
-    sv_model = AutoModel(model="iic/SenseVoiceSmall", device=device, disable_update=True)
-    res = sv_model.generate(input=audio_path, cache={}, language="zh", use_itn=True)
-    raw_text = re.sub(r'<\|.*?\|>', '', res[0]['text']).strip()
-    return raw_text
+def _get_model(model_name: str, **kwargs):
+    if model_name not in MODEL_CACHE:
+        print(f"🚀 Loading {model_name} on {kwargs.get('device', DEVICE)}...")
+        if "whisper" in model_name:
+            MODEL_CACHE[model_name] = whisperx.load_model(model_name, **kwargs)
+        else:
+            MODEL_CACHE[model_name] = AutoModel(model=model_name, **kwargs)
+    return MODEL_CACHE[model_name]
 
-def transcribe_with_whisperx(audio_path) -> str:
-    raw_text = ''
-    return raw_text
+def transcribe_with_sensevoice(audio_path: str) -> str:
+    """Transcribe with SenseVoiceSmall."""
+    model = _get_model("iic/SenseVoiceSmall", device=DEVICE, disable_update=True)
+    res = model.generate(input=audio_path, cache={}, language="zh", use_itn=True)
+    return re.sub(r'<\|.*?\|>', '', res[0]['text']).strip() if res else ""
 
-def transcribe_with_paraformer_zh(audio_path) -> str:
-    raw_text = ''
-    return raw_text
+def transcribe_with_whisperx(audio_path: str) -> str:
+    """Transcribe with WhisperX (faster-whisper)."""
+    # WhisperX doesn't support MPS, use CPU instead.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = _get_model("base", device=device, compute_type=COMPUTE_TYPE, download_root=os.path.expanduser('~/llm_models/whisperx'))
+    audio = whisperx.load_audio(audio_path)
+    result = model.transcribe(audio, batch_size=16)
+    return result["text"].strip() if result and "text" in result else ""
 
-def transcribe_with_funasr_nano(audio_path) -> str:
-    """ Fun-ASR-Nano-2512 """
-    raw_text = ''
-    return raw_text
+def transcribe_with_paraformer_zh(audio_path: str) -> str:
+    """Transcribe with Paraformer-large."""
+    model_id = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+    model = _get_model(model_id, device=DEVICE, disable_update=True)
+    res = model.generate(input=audio_path, cache={})
+    return res[0]["text"].strip() if res else ""
 
-def transcribe_with_qwen3_asr(audio_path) -> str:
-    """ Qwen3-ASR-0.6B """
-    raw_text = ''
-    return raw_text
+def transcribe_with_funasr_nano(audio_path: str) -> str:
+    """Fun-ASR-Nano-2512 - Placeholder"""
+    print("⚠️ Fun-ASR-Nano-2512 model not yet implemented. Skipping.")
+    return ""
 
-def transcribe_with_firered_asr(audio_path) -> str:
-    """ FireRedASR-AED """
-    raw_text = ''
-    return raw_text
+def merge_transcriptions(texts: dict, context_str: str, log_path: str) -> str:
+    """Merge multiple ASR transcriptions using an LLM."""
+    if not any(texts.values()):
+        return ""
 
-def merge_transcriptions(text_list: list, context: str = '') -> str:
-    text = ''
-    # TODO: ask LLM to merge texts (needs more thinking and reasoning)
-    return text
+    valid_texts = {k: v for k, v in texts.items() if v}
+    if len(valid_texts) == 1:
+        return list(valid_texts.values())[0]
 
-def error_picking(text: str, metadata: dict, sermon_dir: str, log_path: str) -> str:
+    transcriptions_formatted = "\n".join([f"- {model_name}: {text}" for model_name, text in valid_texts.items()])
+
+    prompt = f"""
+    Please merge the following ASR transcriptions for a sermon segment into a single, accurate version.
+
+    CONTEXT:
+    {context_str}
+
+    TRANSCRIPTIONS:
+    {transcriptions_formatted}
+
+    RULES:
+    1. Analyze the transcriptions to identify the most likely correct words and phrases.
+    2. Pay attention to context (preacher, scripture) to resolve discrepancies.
+    3. Synthesize the best parts of each transcription. Do not just pick one.
+    4. Return ONLY the merged and corrected text.
+    5. If all inputs are noisy or nonsensical, return an empty string.
+
+    Output JSON: {{"data": "merged text..."}}
+    """
+    res = ask_llm(prompt, log_path=log_path)
+    merged = res.get("data", "")
+    return merged if merged else list(valid_texts.values())[0]
+
+
+def error_picking(text: str, context_str: str, log_path: str) -> str:
     """Identify and fix obvious ASR errors using context and Bible RAG."""
     if not text or len(text.strip()) < 2:
         return text
-
-    # TODO: move the entire context part out and pass in as argument
-    bible_context = get_bible_verses_by_ref(scripture_ref=metadata.get('scripture'))
     
     prompt = f"""
     Identify and fix obvious ASR transcription errors in this sermon segment.
     
     CONTEXT:
-    Preacher: {metadata.get('preacher')}
-    Series: {metadata.get('series')}
-    Scripture: {metadata.get('scripture')}
-    Accent: {metadata.get('profile', {}).get('accent', 'Standard Mandarin')}
-    Bible Context: {bible_context}
+    {context_str}
     
     Segment: {text}
     
@@ -231,13 +246,12 @@ def error_picking(text: str, metadata: dict, sermon_dir: str, log_path: str) -> 
     res = ask_llm(prompt, log_path=log_path)
     corrected = res.get("data")
     
-    # Fallback if LLM returns a failure message, empty, or un-parsable result
     if not corrected or "无法识别" in corrected or "内容缺失" in corrected or len(corrected.strip()) == 0:
         return text
         
     return corrected
 
-def refine_text(text: str, metadata: dict, sermon_dir: str, log_path: str) -> str:
+def refine_text(text: str, context_str: str, log_path: str) -> str:
     """Polish the text for better flow and style."""
     if not text or len(text.strip()) < 2:
         return text
@@ -246,10 +260,7 @@ def refine_text(text: str, metadata: dict, sermon_dir: str, log_path: str) -> st
     Refine and polish this sermon segment for publication.
     
     CONTEXT:
-    Preacher: {metadata.get('preacher')}
-    Series: {metadata.get('series')}
-    Scripture: {metadata.get('scripture')}
-    Profile: {json.dumps(metadata.get('profile', {}), ensure_ascii=False)}
+    {context_str}
     
     Segment: {text}
     
@@ -258,7 +269,7 @@ def refine_text(text: str, metadata: dict, sermon_dir: str, log_path: str) -> st
     2. Improve sentence structure and punctuation while keeping the preacher's original tone.
     3. Ensure consistency with biblical terminology.
     4. Return ONLY the refined text.
-    5. Keep original language (mandarin)
+    5. Keep original language (mandarin).
     6. If the segment contains no meaningful content or cannot be refined, return the original text as is.
     
     Output JSON: {{"data": "refined text..."}}
@@ -281,24 +292,64 @@ def format_timestamp(seconds: float) -> str:
     millis = int(td.microseconds / 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
+def _load_json(path: str) -> dict:
+    """Safely load a JSON file, returning an empty dict if not found."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def load_and_build_context(sermon_dir: str) -> dict:
+    """
+    Loads context from metadata/profile files, gets Bible context,
+    and returns a dictionary with the pre-formatted context string and metadata.
+    """
+    # Load raw data
+    metadata = _load_json(os.path.join(sermon_dir, "metadata.json"))
+    preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
+    profile = _load_json(os.path.join(preacher_dir, "profile.json"))
+
+    # Get related data
+    scripture_ref = metadata.get('scripture')
+    bible_context = get_bible_verses_by_ref(scripture_ref)
+
+    # Build context string
+    preacher = metadata.get('preacher', 'Unknown Preacher')
+    series = metadata.get('series', 'Unknown Series')
+    accent = profile.get('accent', 'Standard Mandarin')
+    
+    context_lines = [
+        f"Preacher: {preacher}",
+        f"Series: {series}",
+        f"Scripture: {scripture_ref or 'Unknown Scripture'}",
+        f"Accent: {accent}",
+    ]
+    if bible_context:
+        context_lines.append(f"Bible Context: {bible_context}")
+    
+    return {
+        "context_str": "\n".join(context_lines),
+        "preacher": preacher,
+        "title": metadata.get('title', 'Unknown Title'),
+    }
+
+@lru_cache(maxsize=1)
 def get_bible_verses_by_ref(scripture_ref: str | None = None) -> str:
     """
     Retrieves Bible verses based on a scripture reference.
     e.g. "John ch3:v16", "Jude ch1"
+    Caches the result for the entire run.
     """
     if not scripture_ref or not os.path.exists(BIBLE_DB_PATH):
         return ""
 
-    # Parse reference: "Book chChapter:vVerse" or "Book chChapter"
     match = re.match(r"^(.*?)(?:\s+ch(\d+))?(?::v(\d+))?$", scripture_ref)
-    if not match:
-        return ""
+    if not match: return ""
     
     book_en, chapter, verse = match.groups()
-    book_en = ' '.join(book_en.strip().split()) # Normalize spaces
+    book_en = ' '.join(book_en.strip().split())
     book_zh = BIBLE_EN_TO_ZH.get(book_en)
-    if not book_zh:
-        return ""
+    if not book_zh: return ""
     
     abbrev = ZH_TO_ABBREV_MAP.get(book_zh)
 
@@ -324,7 +375,7 @@ def get_bible_verses_by_ref(scripture_ref: str | None = None) -> str:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement (Refactored)")
+    parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement (Multi-ASR)")
     default_audio = "output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/original.mp3"
     parser.add_argument("audio_path", nargs="?", default=default_audio, help="Path to the original.mp3 file to process")
     args = parser.parse_args()
