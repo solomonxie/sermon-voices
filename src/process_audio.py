@@ -15,6 +15,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Device and MPS Patching
+DEVICE = "mps"
+_orig_cumsum = torch.cumsum
+torch.cumsum = lambda input, *args, **kwargs: _orig_cumsum(input, *args, **{**kwargs, "dtype": torch.float32}) if kwargs.get("dtype") == torch.float64 else _orig_cumsum(input, *args, **kwargs)
+
 from src.common import ask_llm, safe_remove
 from src.constants import BIBLE_EN_TO_ZH, ZH_TO_ABBREV_MAP
 
@@ -27,7 +32,6 @@ BIBLE_DB_PATH = "output/bible_rag.db"
 
 # Model cache
 MODEL_CACHE = {}
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
 
 def main(audio_path) -> None:
@@ -127,7 +131,7 @@ def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, contex
             "whisperx": transcribe_with_whisperx(chunk_wav),
             "paraformer": transcribe_with_paraformer_zh(chunk_wav),
             "funasr_nano": transcribe_with_funasr_nano(chunk_wav),
-            "glm_nano": transcribe_with_glm_asr_nano(chunk_wav),
+            # "glm_nano": transcribe_with_glm_asr_nano(chunk_wav),
         }
         
         # 3.2 Merge transcriptions using LLM
@@ -161,8 +165,7 @@ def transcribe_with_sensevoice(audio_path: str) -> str:
 def transcribe_with_whisperx(audio_path: str) -> str:
     """Transcribe with WhisperX (faster-whisper)."""
     # WhisperX doesn't support MPS, use CPU instead.
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = _get_model("base", is_whisper=True, device=device, compute_type=COMPUTE_TYPE, download_root=os.path.expanduser('~/llm_models/whisperx'))
+    model = _get_model("base", is_whisper=True, device="cpu", compute_type=COMPUTE_TYPE, download_root=os.path.expanduser('~/llm_models/whisperx'))
     audio = whisperx.load_audio(audio_path)
     result = model.transcribe(audio, batch_size=16)
     return result["text"].strip() if result and "text" in result else ""
@@ -183,12 +186,19 @@ def transcribe_with_funasr_nano(audio_path: str) -> str:
     return res[0]["text"].strip() if res else ""
 
 def transcribe_with_glm_asr_nano(audio_path: str) -> str:
-    """Transcribe with GLM-ASR-Nano-2512."""
+    """Transcribe with GLM-ASR-Nano-2512.
+    Note: Requires transformers>=5.0.0.dev0, which conflicts with qwen-asr (requires 4.57.6).
+    """
     model_id = "zai-org/GLM-ASR-Nano-2512"
     print(f"🚀 Using GLM-ASR-Nano-2512 (model: {model_id})")
-    model = _get_model(model_id, device=DEVICE, disable_update=True)
-    res = model.generate(input=audio_path, cache={})
-    return res[0]["text"].strip() if res else ""
+    print(f"⚠️ Skipping GLM-ASR-Nano-2512: It requires transformers>=5.0.0.dev0 (git branch),")
+    print(f"⚠️ which conflicts with the project's qwen-asr dependency (requires 4.57.6).")
+    # To run this in an isolated environment, use the transformers API:
+    # processor = AutoProcessor.from_pretrained(model_id)
+    # model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+    # inputs = processor.apply_transcription_request(audio_array)
+    # outputs = model.generate(**inputs, max_new_tokens=128)
+    return ""
 
 def _get_model(model_name: str, is_whisper: bool = False, **kwargs):
     if model_name not in MODEL_CACHE:
