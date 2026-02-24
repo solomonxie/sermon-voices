@@ -9,7 +9,7 @@
 # 1. python -m venv venv_glm
 # 2. source venv_glm/bin/activate
 # 3. pip install git+https://github.com/huggingface/transformers.git torch torchaudio soundfile librosa
-# 4. python scripts/poc/test_glm_asr_nano.py
+# 4. python tests/poc/test_glm_asr_nano.py
 
 import os
 import sys

@@ -20,7 +20,7 @@ DEVICE = "mps"
 _orig_cumsum = torch.cumsum
 torch.cumsum = lambda input, *args, **kwargs: _orig_cumsum(input, *args, **{**kwargs, "dtype": torch.float32}) if kwargs.get("dtype") == torch.float64 else _orig_cumsum(input, *args, **kwargs)
 
-from src.common import ask_llm, safe_remove
+from src.common import ask_llm, ask_openai, ask_deepseek, ask_claude, safe_remove
 from src.constants import BIBLE_EN_TO_ZH, ZH_TO_ABBREV_MAP
 
 # --- Globals ---
@@ -131,7 +131,10 @@ def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, contex
             "whisperx": transcribe_with_whisperx(chunk_wav),
             "paraformer": transcribe_with_paraformer_zh(chunk_wav),
             "funasr_nano": transcribe_with_funasr_nano(chunk_wav),
-            # "glm_nano": transcribe_with_glm_asr_nano(chunk_wav),
+            "openai_api": transcribe_with_openai_api(chunk_wav),
+            "groq": transcribe_with_groq(chunk_wav),
+            "deepgram": transcribe_with_deepgram(chunk_wav),
+            "hf_inference": transcribe_with_hf_inference(chunk_wav),
         }
         
         # 3.2 Merge transcriptions using LLM
@@ -199,6 +202,90 @@ def transcribe_with_glm_asr_nano(audio_path: str) -> str:
     # inputs = processor.apply_transcription_request(audio_array)
     # outputs = model.generate(**inputs, max_new_tokens=128)
     return ""
+
+def transcribe_with_openai_api(audio_path: str) -> str:
+    """Transcribe with OpenAI Whisper-1 API."""
+    if not os.getenv("OPENAI_API_KEY"):
+        return ""
+    from openai import OpenAI
+    client = OpenAI()
+    try:
+        with open(audio_path, "rb") as f:
+            res = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="zh"
+            )
+        return res.text.strip()
+    except Exception as e:
+        print(f"⚠️ OpenAI Whisper API Error: {e}")
+        return ""
+
+def transcribe_with_groq(audio_path: str) -> str:
+    """Transcribe with Groq (Whisper-large-v3) API."""
+    if not os.getenv("GROQ_API_KEY"):
+        return ""
+    from groq import Groq
+    client = Groq()
+    try:
+        with open(audio_path, "rb") as f:
+            res = client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=f,
+                language="zh"
+            )
+        return res.text.strip()
+    except Exception as e:
+        print(f"⚠️ Groq API Error: {e}")
+        return ""
+
+def transcribe_with_deepgram(audio_path: str) -> str:
+    """Transcribe with Deepgram (Nova-2) API."""
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        return ""
+    from deepgram import DeepgramClient, PrerecordedOptions, FileSource
+    try:
+        deepgram = DeepgramClient(api_key)
+        with open(audio_path, "rb") as file:
+            buffer_data = file.read()
+        payload: FileSource = {"buffer": buffer_data}
+        options = PrerecordedOptions(
+            model="nova-2",
+            smart_format=True,
+            language="zh-CN"
+        )
+        res = deepgram.listen.rest.v("1").transcribe_file(payload, options)
+        return res.results.channels[0].alternatives[0].transcript.strip()
+    except Exception as e:
+        print(f"⚠️ Deepgram API Error: {e}")
+        return ""
+
+def transcribe_with_hf_inference(audio_path: str) -> str:
+    """Transcribe with Hugging Face Inference API (Serverless)."""
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        return ""
+    
+    import requests
+    # Using whisper-large-v3-turbo for balance of speed and quality
+    model_id = "openai/whisper-large-v3-turbo"
+    api_url = f"https://api-inference.huggingface.co/models/{model_id}"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+
+    try:
+        with open(audio_path, "rb") as f:
+            data = f.read()
+        response = requests.post(api_url, headers=headers, data=data)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("text", "").strip()
+        else:
+            print(f"⚠️ Hugging Face API Error: {response.status_code} - {response.text}")
+            return ""
+    except Exception as e:
+        print(f"⚠️ Hugging Face Inference Error: {e}")
+        return ""
 
 def _get_model(model_name: str, is_whisper: bool = False, **kwargs):
     if model_name not in MODEL_CACHE:
