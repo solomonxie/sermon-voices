@@ -1,14 +1,21 @@
-# Description: This script tests the GLM-ASR-Nano-2512 model for speech-to-text
-# using the funasr library.
+# Description: This script tests the GLM-ASR-Nano-2512 model for speech-to-text.
 #
-# Instructions:
-# 1. Ensure dependencies are installed (funasr, torch, etc.)
-# 2. Update the `AUDIO_FILE` variable if needed.
+# IMPORTANT: GLM-ASR-Nano-2512 uses the `glmasr` architecture, which is ONLY
+# available in transformers>=5.0.0.dev0 (git main branch).
+# Because this project's `qwen-asr` dependency strictly requires transformers==4.57.6,
+# you CANNOT run this test in your main virtual environment without breaking it.
+#
+# Instructions to run in an isolated environment:
+# 1. python -m venv venv_glm
+# 2. source venv_glm/bin/activate
+# 3. pip install git+https://github.com/huggingface/transformers.git torch torchaudio soundfile librosa
+# 4. python scripts/poc/test_glm_asr_nano.py
 
 import os
 import sys
 import torch
-from funasr import AutoModel
+import librosa
+from transformers import AutoProcessor, AutoModelForSeq2SeqLM
 
 # --- Configuration ---
 MODEL_ID = "zai-org/GLM-ASR-Nano-2512"
@@ -34,7 +41,6 @@ def main():
     audio_path = AUDIO_FILE
     if not os.path.exists(audio_path):
         print(f"⚠️ Audio file not found at '{audio_path}'")
-        # Fallback to mp3 if wav doesn't exist
         mp3_path = audio_path.replace("_cleaned.wav", ".mp3")
         if os.path.exists(mp3_path):
             print(f"ℹ️ Found MP3 fallback: {mp3_path}")
@@ -46,26 +52,36 @@ def main():
     # 3. Load Model
     print(f"🚀 Loading model: {MODEL_ID}...")
     try:
-        # disable_update=True prevents checking for model updates every time
-        model = AutoModel(model=MODEL_ID, device=device, disable_update=True)
+        processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+        model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_ID, trust_remote_code=True)
+        model.to(device)
         print("✅ Model loaded successfully.")
     except Exception as e:
         print(f"❌ Failed to load model '{MODEL_ID}'. Error: {e}")
+        print("Note: Ensure you are running this in a dedicated virtual environment with `transformers` installed from the git main branch: pip install git+https://github.com/huggingface/transformers.git")
         sys.exit(1)
 
     # 4. Transcribe
     print(f"🎙️ Transcribing {audio_path}...")
     try:
-        # FunASR generate returns a list of results
-        res = model.generate(input=audio_path, cache={})
+        audio_array, sr = librosa.load(audio_path, sr=16000)
         
-        if res:
-            print("\n--- Transcription Result ---")
-            text = res[0]["text"] if "text" in res[0] else str(res)
-            print(text)
-            print("----------------------------\n")
-        else:
-            print("⚠️ No transcription result returned.")
+        # Processor method for GLM-ASR
+        inputs = processor.apply_transcription_request(audio_array)
+        
+        # We need to move the tensors to device
+        inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        
+        # The model uses BFloat16 natively. On MPS, float32 is often used as a fallback if bfloat16 errors out,
+        # but let's let transformers handle it implicitly. 
+        with torch.no_grad():
+            outputs = model.generate(**inputs, max_new_tokens=128)
+            
+        text = processor.batch_decode(outputs, skip_special_tokens=True)[0].strip()
+
+        print("\n--- Transcription Result ---")
+        print(text)
+        print("----------------------------\n")
             
     except Exception as e:
         print(f"❌ An error occurred during transcription: {e}")
