@@ -1,326 +1,491 @@
 import os
 import re
 import json
-import math
+import sqlite3
 import argparse
-import tempfile
-from glob import glob
-from time import time
+import subprocess
+from datetime import timedelta
+from functools import lru_cache
 
-import gc
 import torch
+import whisperx
 from pydub import AudioSegment
+from funasr import AutoModel
+from dotenv import load_dotenv
 
-from src.common import ask_llm, safe_remove, get_custom_instructions, safe_write, safe_replace, string_similarity, retry
-from src.constants import OUTPUT_ROOT, BIBLE_HOTWORDS_PATH, CHRISTIAN_HOTWORDS_PATH
+load_dotenv()
 
+# Device and MPS Patching
+DEVICE = "mps"
+_orig_cumsum = torch.cumsum
+torch.cumsum = lambda input, *args, **kwargs: _orig_cumsum(input, *args, **{**kwargs, "dtype": torch.float32}) if kwargs.get("dtype") == torch.float64 else _orig_cumsum(input, *args, **kwargs)
 
-# Audio processing
+from src.common import ask_llm, ask_openai, ask_deepseek, ask_claude, safe_remove
+from src.constants import BIBLE_EN_TO_ZH, ZH_TO_ABBREV_MAP
+
+# --- Globals ---
+# Audio processing config
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+os.environ["MODELSCOPE_CACHE"] = os.path.expanduser('~/llm_models/modelscope')
+os.environ["HF_HOME"] = os.path.expanduser('~/llm_models/huggingface')
+BIBLE_DB_PATH = "output/bible_rag.db"
 
+# Model cache
+MODEL_CACHE = {}
+COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement")
-    parser.add_argument("audio_path", help="Path to the original.mp3 file to process")
-    args = parser.parse_args()
-    # Set ModelScope cache directory
-    os.environ["MODELSCOPE_CACHE"] = os.path.expanduser('~/llm_models/modelscope')
-
-    print(f"\n--- Phase 2: Audio Transcription & Refinement ---")
-    process_sermon(args.audio_path)
-
-
-def process_sermon(audio_path: str) -> None:
+def main(audio_path) -> None:
+    print(f"\n--- Phase 2: Audio Transcription & Refinement (Multi-ASR) ---")
     sermon_dir = os.path.dirname(audio_path)
-    final_zh = os.path.join(sermon_dir, 'transcript_zh.txt')
+    final_lyric = os.path.join(sermon_dir, "transcription_zh_lyric.txt")
+    final_zh = os.path.join(sermon_dir, "transcript_zh.txt")
+    llm_log_path = os.path.join(sermon_dir, "llm_log.txt")
 
-    # Checkpoint: Skip if already processed or audio missing
-    if os.path.exists(final_zh) or not os.path.exists(audio_path):
+    if os.path.exists(final_zh):
+        print(f"✅ Already processed: {final_zh}")
         return
 
-    print(f"\n⚙️ Processing: {audio_path}")
+    # 0. Load sermon context
+    context_info = load_and_build_context(sermon_dir)
+    context_str = context_info["context_str"]
+    print(f"📝 Loaded context for: {context_info['preacher']} - {context_info['title']}")
 
-    # 2. Sequential processing
-    orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
-    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
-    errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
-    bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
-    refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
-    zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
-    current_segment_mp3 = os.path.join(sermon_dir, 'current_segment_tmp.mp3')
+    # 1. Preprocess audio
+    cleaned_audio_path = preprocess_audio(audio_path)
 
-    safe_remove(orig_tmp)
-    safe_remove(punc_tmp)
-    safe_remove(errors_tmp)
-    safe_remove(bible_tmp)
-    safe_remove(refined_tmp)
-    safe_remove(zh_tmp)
-    safe_remove(current_segment_mp3)
+    # 2. VAD Split -> ~1min chunks
+    chunks = vad_split(cleaned_audio_path)
 
-    # 1. Get audio segments
-    segments = split_audio(audio_path)
+    # 3. Transcribe -> Merge -> Refine -> Finalize
+    transcribe_and_refine(cleaned_audio_path, chunks, sermon_dir, context_str, llm_log_path)
+
+    print(f"✅ Workflow complete. Results saved to:\n   - {final_lyric}\n   - {final_zh}")
+
+def preprocess_audio(audio_path: str) -> str:
+    """Preprocess audio using ffmpeg: noise reduction, normalization, filter."""
+    print(f"🧹 Preprocessing audio: {audio_path}")
+    output_path = audio_path.replace(".mp3", "_cleaned.wav")
+    if os.path.exists(output_path):
+        return output_path
+
+    cmd = [
+        "ffmpeg", "-i", audio_path,
+        "-af", "highpass=f=200,lowpass=f=3000,afftdn,loudnorm",
+        "-ar", "16000", "-ac", "1",
+        output_path, "-y"
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    return output_path
+
+def vad_split(audio_path: str) -> list[tuple[int, int]]:
+    """Split audio using FunASR FSMN-VAD into ~1min chunks."""
+    print(f"🎙️ VAD splitting (FunASR)...")
+    vad_model = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+    model = AutoModel(model=vad_model, device=DEVICE, disable_update=True)
+    
+    res = model.generate(input=audio_path, batch_size_s=300)
+    segments = res[0]['value'] if res else []
+            
+    # Group into ~1min chunks
+    chunks = []
+    if not segments: return chunks
+    
+    curr_s, curr_e = segments[0]
+    for i in range(1, len(segments)):
+        s, e = segments[i]
+        if e - curr_s <= 60000: # 60 seconds
+            curr_e = e
+        else:
+            chunks.append((curr_s, curr_e))
+            curr_s, curr_e = s, e
+    chunks.append((curr_s, curr_e))
+    
+    print(f"✅ Split into {len(chunks)} chunks.")
+    return chunks
+
+def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, context_str: str, llm_log_path: str) -> None:
+    """Workflow: transcribe -> merge -> error picking -> refine -> finalize."""
     audio = AudioSegment.from_file(audio_path)
+    
+    final_lyric_path = os.path.join(sermon_dir, "transcription_zh_lyric.txt")
+    final_zh_path = os.path.join(sermon_dir, "transcript_zh.txt")
+    
+    safe_remove(final_lyric_path)
+    safe_remove(final_zh_path)
+    # safe_remove(llm_log_path) # Retain LLM log across chunks
+    if os.path.exists(llm_log_path): # Clear log for new run
+        os.remove(llm_log_path)
 
-    # Accumulate segments into batches (approx. 1 minute chunks)
-    current_batch = []
-    current_batch_duration = 0
-    chunk_limit_ms = 60000 # 1 minute chunks
-    batches = []
+    full_refined_text = []
 
-    for start_ms, end_ms in segments:
-        duration = end_ms - start_ms
-        if current_batch_duration + duration > chunk_limit_ms and current_batch:
-            batches.append(current_batch)
-            current_batch = []
-            current_batch_duration = 0
+    for i, (start_ms, end_ms) in enumerate(chunks):
+        print(f"\n📦 Chunk {i+1}/{len(chunks)} ({start_ms/1000:.1f}s - {end_ms/1000:.1f}s)")
+        
+        chunk_wav = os.path.join(sermon_dir, f"chunk_{i}.wav")
+        chunk_audio = audio[start_ms:end_ms]
+        chunk_audio.export(chunk_wav, format="wav")
+        
+        # 3.1 Transcribe with multiple models
+        transcriptions = {
+            "sensevoice": transcribe_with_sensevoice(chunk_wav),
+            "whisperx": transcribe_with_whisperx(chunk_wav),
+            "paraformer": transcribe_with_paraformer_zh(chunk_wav),
+            "funasr_nano": transcribe_with_funasr_nano(chunk_wav),
+            "openai_api": transcribe_with_openai_api(chunk_wav),
+            "groq": transcribe_with_groq(chunk_wav),
+            "deepgram": transcribe_with_deepgram(chunk_wav),
+            "hf_inference": transcribe_with_hf_inference(chunk_wav),
+        }
+        
+        # 3.2 Merge transcriptions using LLM
+        merged_text = merge_transcriptions(transcriptions, context_str, llm_log_path)
+        
+        # 3.3 Error Picking (Corrected Original Transcript)
+        corrected_text = error_picking(merged_text, context_str, llm_log_path)
+        
+        # 3.4 Refine (Polished Text for Final Transcript)
+        refined_text = refine_text(corrected_text, context_str, llm_log_path)
+        full_refined_text.append(refined_text)
+        
+        # 3.5 Finalize Lyric (Original Corrected Text with Timestamps)
+        entry = f"[{format_timestamp(start_ms/1000)} --> {format_timestamp(end_ms/1000)}] {corrected_text}"
+        with open(final_lyric_path, "a", encoding="utf-8") as f:
+            f.write(entry + "\n")
+            
+        safe_remove(chunk_wav)
 
-        current_batch.append((start_ms, end_ms))
-        current_batch_duration += duration
-
-    if current_batch:
-        batches.append(current_batch)
-
-    for i, batch in enumerate(batches):
-        batch_start_ms = batch[0][0]
-        batch_end_ms = batch[-1][1]
-
-        start_time = time()
-        print(f"\n📦 Processing batch {i+1}/{len(batches)} ({batch_start_ms/1000:.1f}s - {batch_end_ms/1000:.1f}s)")
-
-        # Merge batch segments into one chunk
-        chunk_audio = audio[batch_start_ms:batch_end_ms]
-        chunk_audio = chunk_audio.set_frame_rate(16000).set_channels(1)
-        chunk_audio.export(current_segment_mp3, format="mp3", codec="libmp3lame")
-
-        process_segment(current_segment_mp3)
-
-        elapsed = time() - start_time
-        print(f"⏱️ Batch {i+1} processed in {elapsed:.1f}s")
-
-    # 3. Finalize: replace tmp with final and cleanup
-    safe_replace(zh_tmp, final_zh)
-    print(f"✅ Saved refined ZH transcript: {final_zh}")
-    print(f"✅ Audio processing complete: {audio_path}")
-
-
-def split_audio(audio_path: str) -> list[tuple[int, int]]:
-    print(f"🎙️ Splitting audio using VAD: {audio_path}")
-    from funasr import AutoModel
-    vad_model = AutoModel(
-        model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-        device="mps",  # if torch.backends.mps.is_available() else "cpu",
-        disable_update=True
-    )
-    res = vad_model.generate(
-        input=audio_path,
-        max_end_silence_time=800,
-        max_single_segment_time=60000,
-    )
-    return res[0]['value']  # [[start, end], ...] in ms
+    # 3.6 Global Finalize (Plain Text Refined Transcript)
+    with open(final_zh_path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(full_refined_text))
 
 
-@retry(retries=3, delay=5.0)
-def process_segment(audio_path: str) -> str:
-    print(f"🎙️ Reading segment: {os.path.basename(audio_path)}")
-    sermon_dir = os.path.dirname(audio_path)
-    orig_tmp = os.path.join(sermon_dir, 'transcript_original_tmp.txt')
-    punc_tmp = os.path.join(sermon_dir, 'transcript_punc_tmp.txt')
-    errors_tmp = os.path.join(sermon_dir, 'transcript_errors_tmp.txt')
-    bible_tmp = os.path.join(sermon_dir, 'transcript_bible_tmp.txt')
-    refined_tmp = os.path.join(sermon_dir, 'transcript_refined_tmp.txt')
-    zh_tmp = os.path.join(sermon_dir, 'transcript_zh_tmp.txt')
+def transcribe_with_sensevoice(audio_path: str) -> str:
+    """Transcribe with SenseVoiceSmall."""
+    model = _get_model("iic/SenseVoiceSmall", device=DEVICE, disable_update=True)
+    res = model.generate(input=audio_path, cache={}, language="zh", use_itn=True)
+    return re.sub(r'<\|.*?\|>', '', res[0]['text']).strip() if res else ""
 
+def transcribe_with_whisperx(audio_path: str) -> str:
+    """Transcribe with WhisperX (faster-whisper)."""
+    # WhisperX doesn't support MPS, use CPU instead.
+    model = _get_model("base", is_whisper=True, device="cpu", compute_type=COMPUTE_TYPE, download_root=os.path.expanduser('~/llm_models/whisperx'))
+    audio = whisperx.load_audio(audio_path)
+    result = model.transcribe(audio, batch_size=16)
+    return result["text"].strip() if result and "text" in result else ""
+
+def transcribe_with_paraformer_zh(audio_path: str) -> str:
+    """Transcribe with Paraformer-large."""
+    model_id = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+    model = _get_model(model_id, device=DEVICE, disable_update=True)
+    res = model.generate(input=audio_path, cache={})
+    return res[0]["text"].strip() if res else ""
+
+def transcribe_with_funasr_nano(audio_path: str) -> str:
+    """Transcribe with Fun-ASR-Nano-2512."""
+    model_id = "FunAudioLLM/Fun-ASR-Nano-2512"
+    print(f"🚀 Using Fun-ASR-Nano-2512 (model: {model_id})")
+    model = _get_model(model_id, device=DEVICE, disable_update=True)
+    res = model.generate(input=audio_path, cache={})
+    return res[0]["text"].strip() if res else ""
+
+def transcribe_with_glm_asr_nano(audio_path: str) -> str:
+    """Transcribe with GLM-ASR-Nano-2512.
+    Note: Requires transformers>=5.0.0.dev0, which conflicts with qwen-asr (requires 4.57.6).
+    """
+    model_id = "zai-org/GLM-ASR-Nano-2512"
+    print(f"🚀 Using GLM-ASR-Nano-2512 (model: {model_id})")
+    print(f"⚠️ Skipping GLM-ASR-Nano-2512: It requires transformers>=5.0.0.dev0 (git branch),")
+    print(f"⚠️ which conflicts with the project's qwen-asr dependency (requires 4.57.6).")
+    # To run this in an isolated environment, use the transformers API:
+    # processor = AutoProcessor.from_pretrained(model_id)
+    # model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+    # inputs = processor.apply_transcription_request(audio_array)
+    # outputs = model.generate(**inputs, max_new_tokens=128)
+    return ""
+
+def transcribe_with_openai_api(audio_path: str) -> str:
+    """Transcribe with OpenAI Whisper-1 API."""
+    if not os.getenv("OPENAI_API_KEY"):
+        return ""
+    from openai import OpenAI
+    client = OpenAI()
+    try:
+        with open(audio_path, "rb") as f:
+            res = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="zh"
+            )
+        return res.text.strip()
+    except Exception as e:
+        print(f"⚠️ OpenAI Whisper API Error: {e}")
+        return ""
+
+def transcribe_with_groq(audio_path: str) -> str:
+    """Transcribe with Groq (Whisper-large-v3) API."""
+    if not os.getenv("GROQ_API_KEY"):
+        return ""
+    from groq import Groq
+    client = Groq()
+    try:
+        with open(audio_path, "rb") as f:
+            res = client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=f,
+                language="zh"
+            )
+        return res.text.strip()
+    except Exception as e:
+        print(f"⚠️ Groq API Error: {e}")
+        return ""
+
+def transcribe_with_deepgram(audio_path: str) -> str:
+    """Transcribe with Deepgram (Nova-2) API."""
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        return ""
+    from deepgram import DeepgramClient, PrerecordedOptions, FileSource
+    try:
+        deepgram = DeepgramClient(api_key)
+        with open(audio_path, "rb") as file:
+            buffer_data = file.read()
+        payload: FileSource = {"buffer": buffer_data}
+        options = PrerecordedOptions(
+            model="nova-2",
+            smart_format=True,
+            language="zh-CN"
+        )
+        res = deepgram.listen.rest.v("1").transcribe_file(payload, options)
+        return res.results.channels[0].alternatives[0].transcript.strip()
+    except Exception as e:
+        print(f"⚠️ Deepgram API Error: {e}")
+        return ""
+
+def transcribe_with_hf_inference(audio_path: str) -> str:
+    """Transcribe with Hugging Face Inference API (Serverless)."""
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        return ""
+    
+    import requests
+    # Using whisper-large-v3-turbo for balance of speed and quality
+    model_id = "openai/whisper-large-v3-turbo"
+    api_url = f"https://api-inference.huggingface.co/models/{model_id}"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+
+    try:
+        with open(audio_path, "rb") as f:
+            data = f.read()
+        response = requests.post(api_url, headers=headers, data=data)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("text", "").strip()
+        else:
+            print(f"⚠️ Hugging Face API Error: {response.status_code} - {response.text}")
+            return ""
+    except Exception as e:
+        print(f"⚠️ Hugging Face Inference Error: {e}")
+        return ""
+
+def _get_model(model_name: str, is_whisper: bool = False, **kwargs):
+    if model_name not in MODEL_CACHE:
+        print(f"🚀 Loading {model_name} on {kwargs.get('device', DEVICE)}...")
+        if is_whisper or "whisper" in model_name:
+            MODEL_CACHE[model_name] = whisperx.load_model(model_name, **kwargs)
+        else:
+            MODEL_CACHE[model_name] = AutoModel(model=model_name, **kwargs)
+    return MODEL_CACHE[model_name]
+
+def merge_transcriptions(texts: dict, context_str: str, log_path: str) -> str:
+    """Merge multiple ASR transcriptions using an LLM."""
+    if not any(texts.values()):
+        return ""
+
+    valid_texts = {k: v for k, v in texts.items() if v}
+    if len(valid_texts) == 1:
+        return list(valid_texts.values())[0]
+
+    transcriptions_formatted = "\n".join([f"- {model_name}: {text}" for model_name, text in valid_texts.items()])
+
+    prompt = f"""
+    Please merge the following ASR transcriptions for a sermon segment into a single, accurate version.
+
+    CONTEXT:
+    {context_str}
+
+    TRANSCRIPTIONS:
+    {transcriptions_formatted}
+
+    RULES:
+    1. Analyze the transcriptions to identify the most likely correct words and phrases.
+    2. Pay attention to context (preacher, scripture) to resolve discrepancies.
+    3. Synthesize the best parts of each transcription. Do not just pick one.
+    4. Return ONLY the merged and corrected text.
+    5. If all inputs are noisy or nonsensical, return an empty string.
+
+    Output JSON: {{"data": "merged text..."}}
+    """
+    res = ask_llm(prompt, log_path=log_path)
+    merged = res.get("data", "")
+    return merged if merged else list(valid_texts.values())[0]
+
+
+def error_picking(text: str, context_str: str, log_path: str) -> str:
+    """Identify and fix obvious ASR errors using context and Bible RAG."""
+    if not text or len(text.strip()) < 2:
+        return text
+    
+    prompt = f"""
+    Identify and fix obvious ASR transcription errors in this sermon segment.
+    
+    CONTEXT:
+    {context_str}
+    
+    Segment: {text}
+    
+    Rules:
+    1. Fix homophones, typos, and misheard biblical terms.
+    2. Correct names and locations based on the preacher profile.
+    3. Keep the text as literal as possible to what was spoken, just fixed.
+    4. Return ONLY the corrected text.
+    5. If the segment is too short, contains only noise, or no errors are found, return the original text as is.
+    
+    Output JSON: {{"data": "corrected text..."}}
+    """
+    res = ask_llm(prompt, log_path=log_path)
+    corrected = res.get("data")
+    
+    if not corrected or "无法识别" in corrected or "内容缺失" in corrected or len(corrected.strip()) == 0:
+        return text
+        
+    return corrected
+
+def refine_text(text: str, context_str: str, log_path: str) -> str:
+    """Polish the text for better flow and style."""
+    if not text or len(text.strip()) < 2:
+        return text
+
+    prompt = f"""
+    Refine and polish this sermon segment for publication.
+    
+    CONTEXT:
+    {context_str}
+    
+    Segment: {text}
+    
+    Rules:
+    1. Remove stammers, filler words, and duplicated phrases or sentences with similar meanings.
+    2. Improve sentence structure and punctuation while keeping the preacher's original tone.
+    3. Ensure consistency with biblical terminology.
+    4. Return ONLY the refined text.
+    5. Keep original language (mandarin).
+    6. If the segment contains no meaningful content or cannot be refined, return the original text as is.
+    
+    Output JSON: {{"data": "refined text..."}}
+    """
+    res = ask_llm(prompt, log_path=log_path)
+    refined = res.get("data")
+
+    if not refined or len(refined.strip()) == 0:
+        return text
+
+    return refined
+
+def format_timestamp(seconds: float) -> str:
+    """Format seconds to HH:MM:SS.mmm"""
+    td = timedelta(seconds=seconds)
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    millis = int(td.microseconds / 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+def _load_json(path: str) -> dict:
+    """Safely load a JSON file, returning an empty dict if not found."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def load_and_build_context(sermon_dir: str) -> dict:
+    """
+    Loads context from metadata/profile files, gets Bible context,
+    and returns a dictionary with the pre-formatted context string and metadata.
+    """
+    # Load raw data
+    metadata = _load_json(os.path.join(sermon_dir, "metadata.json"))
     preacher_dir = os.path.dirname(os.path.dirname(sermon_dir))
-    transcript_instr = get_custom_instructions(preacher_dir, "transcript.md")
+    profile = _load_json(os.path.join(preacher_dir, "profile.json"))
 
-    # Load hotwords
-    hotwords = []
-    for path in [BIBLE_HOTWORDS_PATH]:
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                hotwords.extend([line.strip() for line in f if line.strip()])
-    hotwords_str = " ".join(hotwords)
+    # Get related data
+    scripture_ref = metadata.get('scripture')
+    bible_context = get_bible_verses_by_ref(scripture_ref)
 
-    # 1. Transcribe
-    text = transcribe_audio(audio_path, hotwords=hotwords_str)
-    if not text.strip(): return ""
-    safe_write(orig_tmp, text)
+    # Build context string
+    preacher = metadata.get('preacher', 'Unknown Preacher')
+    series = metadata.get('series', 'Unknown Series')
+    accent = profile.get('accent', 'Standard Mandarin')
+    
+    context_lines = [
+        f"Preacher: {preacher}",
+        f"Series: {series}",
+        f"Scripture: {scripture_ref or 'Unknown Scripture'}",
+        f"Accent: {accent}",
+    ]
+    if bible_context:
+        context_lines.append(f"Bible Context: {bible_context}")
+    
+    return {
+        "context_str": "\n".join(context_lines),
+        "preacher": preacher,
+        "title": metadata.get('title', 'Unknown Title'),
+    }
 
-    # 1.1 Restore Punctuation
-    text = enhance_punctuation(text)
-    safe_write(punc_tmp, text)
-
-    # 2. Bible Verse Lookup
-    bible_context = lookup_bible_verses(text)
-    safe_write(bible_tmp, bible_context)
-
-    # 3. Iterative Refinement
-    refined_zh = text
-    ralph_wiggum_loops = 3
-    for i in range(ralph_wiggum_loops):
-        print(f"🔄 Ralph Wiggum correction loop {i+1}/{ralph_wiggum_loops}...")
-        errors = pick_zh_errors(refined_zh)
-        safe_write(errors_tmp, f'Errors (i={i}):\n' + errors)
-        safe_write(refined_tmp, f'Refined Text (i={i}):\n{refined_zh}\n\n')
-
-        if not errors.strip() and i > 0:
-            print("✨ No more errors found.")
-            break
-
-        extra_context = f"""
-            --- START CUSTOM INSTRUCTIONS ---
-            {transcript_instr}
-            --- END CUSTOM INSTRUCTIONS ---
-            --- START BIBLE REFERENCE (CUV) ---
-            {bible_context}
-            --- END BIBLE REFERENCE (CUV) ---
-            --- START IDENTIFIED ERRORS ---
-            {errors}
-            --- END IDENTIFIED ERRORS ---
-        """
-        last_text = refined_zh
-        refined_zh = refine_text(refined_zh, extra_context=extra_context)
-
-        score, reason = judge_refinement(refined_zh, last_text)
-        print(f"⭐️ Stabilization Score: {score:.1%} | Reason: {reason}")
-        if score >= 0.99:
-            print(f"⏹️ Text stabilized ({score:.1%} similarity), finishing loop.")
-            break
-
-    safe_write(zh_tmp, refined_zh)
-    return refined_zh
-
-
-def lookup_bible_verses(text: str) -> str:
-    print(f"📖 Looking up related Bible verses...")
-    prompt = f"""
-    从以下的讲道内容中，找出所有引用的圣经出处。
-    格式:
-    - [圣经书名] [章]:[节] - "[经文]"
-
-    讲道内容:
-    {text}
-
-    输出必须是如下格式的JSON对象:
-    {{
-      "data": "[书名] [章]:[节] - [经文]; [书名] [章]:[节] - [经文];..."
-    }}
-
-    如果没有找到明确的经文，返回 {{"data": ""}}。
-    不要包含markdown、前言或解释。
+@lru_cache(maxsize=1)
+def get_bible_verses_by_ref(scripture_ref: str | None = None) -> str:
     """
-    data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
-    return str(data.get('data') or data)
-
-
-def transcribe_audio(audio_path: str, hotwords: str = "") -> str:
-    from funasr import AutoModel
-
-    # Models are cached in ~/llm_models/modelscope
-    print(f"🎙️ Transcribing: {os.path.basename(audio_path)} (hotwords: {len(hotwords)} chars)")
-
-    # Initialize model (ModelScope cache is handled via environment variable in main)
-    model = AutoModel(
-        model="paraformer-zh",
-        device="mps", # if torch.backends.mps.is_available() else "cpu",
-        disable_update=True
-    )
-
-    try:
-        # res = model.generate(input=audio_path, cache={}, language="auto", use_itn=True, hotwords=hotwords)
-        res = model.generate(input=audio_path, batch_size_s=300, hotwords=hotwords)
-        text = res[0].get('text', '').strip()
-        # Clean up SenseVoice tags if present (e.g., <|zh|><|NEUTRAL|><|Speech|>)
-        text = re.sub(r'<\|.*?\|>', '', text).strip()
-        return text
-    except Exception as e:
-        raise RuntimeError(f"❌ Transcribe Error: {e}")
-
-
-def enhance_punctuation(text: str) -> str:
-    from funasr import AutoModel
-    print(f"✍️ Enhancing punctuation with CT-Punc...")
-    model = AutoModel(model="ct-punc", device="mps", disable_update=True)
-    try:
-        res = model.generate(input=text)
-        return res[0].get('text', text).strip()
-    except Exception as e:
-        print(f"❌ CT-Punc Error: {e}")
-        return text
-
-
-def pick_zh_errors(text: str) -> str:
-    print(f"🔍 Picking errors from transcript...")
-    prompt = f"""
-    Analyze the Chinese sermon transcript and identify issues for transforming it into a polished article/paper.
-
-    PRIMARY GOAL:
-    Find ASR errors, logical inconsistencies, and flow problems that hinder reading clarity. **Respect the original punctuations unless they are clearly incorrect ASR artifacts.**
-
-    ERROR CATEGORIES:
-    - Fillers/Stammers: "这个这个", "呃", "嗯", "啊", "那个那个" (mark these for removal).
-    - Logical Gaps: Phrasing that lacks context or seems disconnected from the surrounding text.
-    - Punctuation/Paragraphing: Missing logical breaks or incorrect punctuation for a formal article.
-    - Repetitions: Redundant phrases or stutters that should be streamlined.
-
-    Transcript:
-    {text}
-
-    Output JSON: {{"data": "issue: suggestion;\nissue: suggestion; ..."}}
+    Retrieves Bible verses based on a scripture reference.
+    e.g. "John ch3:v16", "Jude ch1"
+    Caches the result for the entire run.
     """
-    data = ask_llm(prompt, model='qwen3:4b-thinking-2507-q8_0')
-    return str(data.get('data') or data)
+    if not scripture_ref or not os.path.exists(BIBLE_DB_PATH):
+        return ""
 
+    match = re.match(r"^(.*?)(?:\s+ch(\d+))?(?::v(\d+))?$", scripture_ref)
+    if not match: return ""
+    
+    book_en, chapter, verse = match.groups()
+    book_en = ' '.join(book_en.strip().split())
+    book_zh = BIBLE_EN_TO_ZH.get(book_en)
+    if not book_zh: return ""
+    
+    abbrev = ZH_TO_ABBREV_MAP.get(book_zh)
 
-def refine_text(text: str, extra_context: str) -> str:
-    print(f"✍️ Refining ZH text segment...")
-    prompt = f"""
-    Refine the Chinese sermon transcript.
-    PRIMARY RULES:
-    1. PRESERVE ORIGINAL WORDING & STYLE. Do NOT paraphrase.
-    2. CORRECT biblical terms/names to Chinese Union Version (CUV).
-    3. Use the provided Bible verse reference to correct biblical terms/names/sentences.
-    4. Fix punctuation and obvious ASR errors, separate paragraphs based on context.
-    5. Remove stammers and fillers (呃, 嗯, 那个).
-    6. Do NOT add any additional content.
+    conn = sqlite3.connect(BIBLE_DB_PATH)
+    cursor = conn.cursor()
+    
+    query = "SELECT book, chapter, verse, text FROM verses WHERE (book = ? OR book = ?)"
+    params = [book_zh, abbrev]
+    
+    if chapter:
+        query += " AND chapter = ?"
+        params.append(chapter)
+    if verse:
+        query += " AND verse = ?"
+        params.append(verse)
+        
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
 
-    {extra_context}
-
-    Original transcript:
-    {text}
-
-    Output JSON: {{"data": "..."}}
-    """
-    data = ask_llm(prompt)
-    return str(data.get('data')) or text
-
-
-def judge_refinement(text: str, last_text: str) -> tuple[float, str]:
-    print(f"⚖️ Judging refinement stabilization...")
-    prompt = f"""
-    Compare the following two versions of a sermon transcript.
-    Evaluate if the refinement has stabilized (i.e., no more significant corrections are needed).
-
-    Previous Version:
-    {last_text}
-
-    Current Version:
-    {text}
-
-    A score of 1.0 means the text is identical or only has trivial punctuation changes.
-    A score below 0.9 means significant meaningful changes were still made.
-
-    Return a JSON object:
-    {{
-        "score": 0.0-1.0,
-        "reason": "Brief explanation of why the score was given"
-    }}
-    """
-    data = ask_llm(prompt)
-    score = float(data.get('score') or 0.0)
-    reason = data.get('reason') or data.get('data') or 'No reason provided'
-    return score, reason
+    results = [f"{b} {c}:{v} - \"{t}\"" for b, c, v, t in rows]
+    return "; ".join(results)
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description="Phase 2: Audio Transcription & Refinement (Multi-ASR)")
+    default_audio = "output/stephen-tong/ephesians/001_answers-to-questions-on-ephesians-0-a/original.mp3"
+    parser.add_argument("audio_path", nargs="?", default=default_audio, help="Path to the original.mp3 file to process")
+    args = parser.parse_args()
+    main(args.audio_path)
