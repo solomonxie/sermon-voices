@@ -78,41 +78,40 @@ def preprocess_audio(audio_path: str) -> str:
     return output_path
 
 def vad_split(audio_path: str) -> list[tuple[int, int]]:
-    """Split audio using FunASR FSMN-VAD into ~1min chunks."""
+    """Split audio using FunASR FSMN-VAD into ~5min chunks."""
     print(f"🎙️ VAD splitting (FunASR)...")
     vad_model = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
     model = AutoModel(model=vad_model, device=DEVICE, disable_update=True)
-    
+
     res = model.generate(input=audio_path, batch_size_s=300)
     segments = res[0]['value'] if res else []
-            
-    # Group into ~1min chunks
+
+    # Group into ~5min chunks
     chunks = []
     if not segments: return chunks
-    
+
     curr_s, curr_e = segments[0]
     for i in range(1, len(segments)):
         s, e = segments[i]
-        if e - curr_s <= 60000: # 60 seconds
+        if e - curr_s <= 300000: # 300 seconds (5 min)
             curr_e = e
         else:
             chunks.append((curr_s, curr_e))
             curr_s, curr_e = s, e
     chunks.append((curr_s, curr_e))
-    
+
     print(f"✅ Split into {len(chunks)} chunks.")
     return chunks
 
 def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, context_str: str, llm_log_path: str) -> None:
-    """Workflow: transcribe -> merge -> error picking -> refine -> finalize."""
+    """Workflow: transcribe base -> find bad timeframes -> targeted multi-ASR -> assemble -> error pick -> refine."""
     audio = AudioSegment.from_file(audio_path)
-    
+
     final_lyric_path = os.path.join(sermon_dir, "transcription_zh_lyric.txt")
     final_zh_path = os.path.join(sermon_dir, "transcript_zh.txt")
-    
+
     safe_remove(final_lyric_path)
     safe_remove(final_zh_path)
-    # safe_remove(llm_log_path) # Retain LLM log across chunks
     if os.path.exists(llm_log_path): # Clear log for new run
         os.remove(llm_log_path)
 
@@ -120,43 +119,125 @@ def transcribe_and_refine(audio_path: str, chunks: list, sermon_dir: str, contex
 
     for i, (start_ms, end_ms) in enumerate(chunks):
         print(f"\n📦 Chunk {i+1}/{len(chunks)} ({start_ms/1000:.1f}s - {end_ms/1000:.1f}s)")
-        
+
         chunk_wav = os.path.join(sermon_dir, f"chunk_{i}.wav")
         chunk_audio = audio[start_ms:end_ms]
         chunk_audio.export(chunk_wav, format="wav")
-        
-        # 3.1 Transcribe with multiple models
-        transcriptions = {
-            "sensevoice": transcribe_with_sensevoice(chunk_wav),
-            "whisperx": transcribe_with_whisperx(chunk_wav),
-            "paraformer": transcribe_with_paraformer_zh(chunk_wav),
-            "funasr_nano": transcribe_with_funasr_nano(chunk_wav),
-            "openai_api": transcribe_with_openai_api(chunk_wav),
-            "groq": transcribe_with_groq(chunk_wav),
-            "deepgram": transcribe_with_deepgram(chunk_wav),
-            "hf_inference": transcribe_with_hf_inference(chunk_wav),
-        }
-        
-        # 3.2 Merge transcriptions using LLM
-        merged_text = merge_transcriptions(transcriptions, context_str, llm_log_path)
-        
-        # 3.3 Error Picking (Corrected Original Transcript)
-        corrected_text = error_picking(merged_text, context_str, llm_log_path)
-        
-        # 3.4 Refine (Polished Text for Final Transcript)
+
+        # 3.1 Transcribe base with timestamps (WhisperX)
+        print("   -> Getting base transcription with timestamps...")
+        base_segments = transcribe_base_with_timestamps(chunk_wav)
+
+        # 3.2 Find inaccurate timeframes via LLM
+        print("   -> Evaluating transcription quality with LLM...")
+        bad_timeframes = find_inaccurate_timeframes(base_segments, context_str, llm_log_path)
+
+        # 3.3 Targeted multi-ASR on bad timeframes
+        corrected_segments_map = {}
+        if bad_timeframes:
+            print(f"   -> Found {len(bad_timeframes)} inaccurate timeframes. Running targeted multi-ASR fixes...")
+
+        for tf in bad_timeframes:
+            # Add small padding to timeframes (0.5s) to avoid clipping words, but keep within bounds
+            s_time = max(0.0, float(tf.get('start', 0.0)) - 0.5)
+            e_time = min(len(chunk_audio) / 1000.0, float(tf.get('end', 0.0)) + 0.5)
+
+            if s_time >= e_time:
+                continue
+
+            print(f"      -> Fixing timeframe: [{s_time:.1f} - {e_time:.1f}]")
+            slice_wav = os.path.join(sermon_dir, f"slice_{s_time}_{e_time}.wav")
+            slice_audio = chunk_audio[int(s_time*1000):int(e_time*1000)]
+            slice_audio.export(slice_wav, format="wav")
+
+            transcriptions = {
+                "sensevoice": transcribe_with_sensevoice(slice_wav),
+                "whisperx": transcribe_with_whisperx(slice_wav),
+                "paraformer": transcribe_with_paraformer_zh(slice_wav),
+                "funasr_nano": transcribe_with_funasr_nano(slice_wav),
+                "openai_api": transcribe_with_openai_api(slice_wav),
+                "groq": transcribe_with_groq(slice_wav),
+                "deepgram": transcribe_with_deepgram(slice_wav),
+                "hf_inference": transcribe_with_hf_inference(slice_wav),
+                "google_chirp": transcribe_with_google_chirp3(slice_wav),
+            }
+
+            merged = merge_transcriptions(transcriptions, context_str, llm_log_path)
+            corrected_segments_map[(s_time, e_time)] = merged
+            safe_remove(slice_wav)
+
+        # 3.4 Assemble final chunk text
+        print("   -> Assembling final chunk text...")
+        assembled_text = assemble_corrected_chunk(base_segments, corrected_segments_map, context_str, llm_log_path)
+
+        # 3.5 Error Picking & Refine
+        print("   -> Running final error picking and refinement...")
+        corrected_text = error_picking(assembled_text, context_str, llm_log_path)
         refined_text = refine_text(corrected_text, context_str, llm_log_path)
+
         full_refined_text.append(refined_text)
-        
-        # 3.5 Finalize Lyric (Original Corrected Text with Timestamps)
+
+        # 3.6 Finalize Lyric
         entry = f"[{format_timestamp(start_ms/1000)} --> {format_timestamp(end_ms/1000)}] {corrected_text}"
         with open(final_lyric_path, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
-            
+
         safe_remove(chunk_wav)
 
-    # 3.6 Global Finalize (Plain Text Refined Transcript)
+    # 3.7 Global Finalize
     with open(final_zh_path, "w", encoding="utf-8") as f:
         f.write("\n\n".join(full_refined_text))
+
+def find_inaccurate_timeframes(segments: list[dict], context_str: str, log_path: str) -> list[dict]:
+    """Ask LLM to find timeframes that need re-transcription."""
+    if not segments: return []
+
+    formatted = "\n".join([f"[{seg['start']:.1f} - {seg['end']:.1f}] {seg['text']}" for seg in segments])
+
+    prompt = f"""
+    Analyze the following timestamped transcription of a sermon segment.
+    Identify the specific timeframes where the transcription seems inaccurate, grammatically incorrect, disjointed, or likely contains misheard words (e.g. homophones, incorrect biblical terms).
+
+    CONTEXT:
+    {context_str}
+
+    TRANSCRIPTION:
+    {formatted}
+
+    Return ONLY a JSON list of dictionaries containing 'start' and 'end' times for the inaccurate parts.
+    If everything looks perfect, return an empty list.
+    Example: {{"data": [{{"start": 10.5, "end": 25.0}}, {{"start": 120.0, "end": 135.5}}]}}
+    """
+    res = ask_llm(prompt, log_path=log_path)
+    return res.get("data", [])
+
+def assemble_corrected_chunk(base_segments: list[dict], corrected_map: dict, context_str: str, log_path: str) -> str:
+    """Weave the corrected timeframes back into the base transcription."""
+    base_text = " ".join([s.get('text', '') for s in base_segments])
+    if not corrected_map:
+        return base_text
+
+    corrections_str = "\n".join([f"Time [{s:.1f} - {e:.1f}]: {text}" for (s, e), text in corrected_map.items()])
+
+    prompt = f"""
+    You are given a base transcription of a sermon segment, and a set of corrected texts for specific timeframes.
+    Please replace the inaccurate parts in the base transcription with the provided corrections to produce a seamless, accurate final text.
+
+    CONTEXT:
+    {context_str}
+
+    BASE TRANSCRIPTION:
+    {base_text}
+
+    CORRECTIONS:
+    {corrections_str}
+
+    Return ONLY the final assembled and merged text in Chinese.
+    Output JSON: {{"data": "assembled text..."}}
+    """
+    res = ask_llm(prompt, log_path=log_path)
+    assembled = res.get("data", "")
+    return assembled if assembled else base_text
 
 
 def transcribe_with_sensevoice(audio_path: str) -> str:
@@ -266,7 +347,7 @@ def transcribe_with_hf_inference(audio_path: str) -> str:
     hf_token = os.getenv("HF_TOKEN")
     if not hf_token:
         return ""
-    
+
     import requests
     # Using whisper-large-v3-turbo for balance of speed and quality
     model_id = "openai/whisper-large-v3-turbo"
@@ -286,6 +367,47 @@ def transcribe_with_hf_inference(audio_path: str) -> str:
     except Exception as e:
         print(f"⚠️ Hugging Face Inference Error: {e}")
         return ""
+
+def transcribe_with_google_chirp3(audio_path: str) -> str:
+    """Transcribe with Google Cloud Speech-to-Text V2 (Chirp 3)."""
+    if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        return ""
+    try:
+        from google.cloud.speech_v2 import SpeechClient
+        from google.cloud.speech_v2.types import cloud_speech
+
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+        if not project_id:
+            print("⚠️ GOOGLE_CLOUD_PROJECT env var is required for Chirp 3")
+            return ""
+
+        client = SpeechClient()
+        with open(audio_path, "rb") as f:
+            audio_content = f.read()
+
+        config = cloud_speech.RecognitionConfig(
+            auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
+            language_codes=["cmn-Hans-CN"],
+            model="chirp", # using standard chirp identifier
+        )
+        request = cloud_speech.RecognizeRequest(
+            recognizer=f"projects/{project_id}/locations/global/recognizers/_",
+            config=config,
+            content=audio_content,
+        )
+        response = client.recognize(request=request)
+        return " ".join([result.alternatives[0].transcript for result in response.results]).strip()
+    except Exception as e:
+        print(f"⚠️ Google Chirp API Error: {e}")
+        return ""
+
+def transcribe_base_with_timestamps(audio_path: str) -> list[dict]:
+    """Transcribe with WhisperX and return timestamped segments."""
+    # WhisperX doesn't support MPS well for timestamps, use CPU.
+    model = _get_model("base", is_whisper=True, device="cpu", compute_type=COMPUTE_TYPE, download_root=os.path.expanduser('~/llm_models/whisperx'))
+    audio = whisperx.load_audio(audio_path)
+    result = model.transcribe(audio, batch_size=16)
+    return result.get("segments", [])
 
 def _get_model(model_name: str, is_whisper: bool = False, **kwargs):
     if model_name not in MODEL_CACHE:
@@ -334,30 +456,30 @@ def error_picking(text: str, context_str: str, log_path: str) -> str:
     """Identify and fix obvious ASR errors using context and Bible RAG."""
     if not text or len(text.strip()) < 2:
         return text
-    
+
     prompt = f"""
     Identify and fix obvious ASR transcription errors in this sermon segment.
-    
+
     CONTEXT:
     {context_str}
-    
+
     Segment: {text}
-    
+
     Rules:
     1. Fix homophones, typos, and misheard biblical terms.
     2. Correct names and locations based on the preacher profile.
     3. Keep the text as literal as possible to what was spoken, just fixed.
     4. Return ONLY the corrected text.
     5. If the segment is too short, contains only noise, or no errors are found, return the original text as is.
-    
+
     Output JSON: {{"data": "corrected text..."}}
     """
     res = ask_llm(prompt, log_path=log_path)
     corrected = res.get("data")
-    
+
     if not corrected or "无法识别" in corrected or "内容缺失" in corrected or len(corrected.strip()) == 0:
         return text
-        
+
     return corrected
 
 def refine_text(text: str, context_str: str, log_path: str) -> str:
@@ -367,12 +489,12 @@ def refine_text(text: str, context_str: str, log_path: str) -> str:
 
     prompt = f"""
     Refine and polish this sermon segment for publication.
-    
+
     CONTEXT:
     {context_str}
-    
+
     Segment: {text}
-    
+
     Rules:
     1. Remove stammers, filler words, and duplicated phrases or sentences with similar meanings.
     2. Improve sentence structure and punctuation while keeping the preacher's original tone.
@@ -380,7 +502,7 @@ def refine_text(text: str, context_str: str, log_path: str) -> str:
     4. Return ONLY the refined text.
     5. Keep original language (mandarin).
     6. If the segment contains no meaningful content or cannot be refined, return the original text as is.
-    
+
     Output JSON: {{"data": "refined text..."}}
     """
     res = ask_llm(prompt, log_path=log_path)
@@ -426,7 +548,7 @@ def load_and_build_context(sermon_dir: str) -> dict:
     preacher = metadata.get('preacher', 'Unknown Preacher')
     series = metadata.get('series', 'Unknown Series')
     accent = profile.get('accent', 'Standard Mandarin')
-    
+
     context_lines = [
         f"Preacher: {preacher}",
         f"Series: {series}",
@@ -435,7 +557,7 @@ def load_and_build_context(sermon_dir: str) -> dict:
     ]
     if bible_context:
         context_lines.append(f"Bible Context: {bible_context}")
-    
+
     return {
         "context_str": "\n".join(context_lines),
         "preacher": preacher,
@@ -454,27 +576,27 @@ def get_bible_verses_by_ref(scripture_ref: str | None = None) -> str:
 
     match = re.match(r"^(.*?)(?:\s+ch(\d+))?(?::v(\d+))?$", scripture_ref)
     if not match: return ""
-    
+
     book_en, chapter, verse = match.groups()
     book_en = ' '.join(book_en.strip().split())
     book_zh = BIBLE_EN_TO_ZH.get(book_en)
     if not book_zh: return ""
-    
+
     abbrev = ZH_TO_ABBREV_MAP.get(book_zh)
 
     conn = sqlite3.connect(BIBLE_DB_PATH)
     cursor = conn.cursor()
-    
+
     query = "SELECT book, chapter, verse, text FROM verses WHERE (book = ? OR book = ?)"
     params = [book_zh, abbrev]
-    
+
     if chapter:
         query += " AND chapter = ?"
         params.append(chapter)
     if verse:
         query += " AND verse = ?"
         params.append(verse)
-        
+
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
