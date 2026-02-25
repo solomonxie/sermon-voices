@@ -28,3 +28,4 @@ Welcome to the sermon-voices project. Follow these core standards to maintain co
 - All testing related code should be under tests/ with correct category (unit, functional, interface, smoke...)
 - All one-shot code should be under scripts/
 - Any newly introduced lib or tech stack should be tested with a single script under scripts/poc/
+- Logs: all executions of main workflow (exclude poc or testing) should be saved to data/logs/<YYYYmmddHHMMSS>_<name>.txt for future audit.

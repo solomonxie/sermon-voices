@@ -7,6 +7,7 @@ import functools
 from typing import Callable, Any
 
 from openai import OpenAI
+from anthropic import Anthropic
 from dotenv import load_dotenv
 
 from src.constants import DEFAULT_MODEL, TRANSLATION_MAP_PATH
@@ -14,10 +15,18 @@ from src.constants import DEFAULT_MODEL, TRANSLATION_MAP_PATH
 # Load environment variables from .env file
 load_dotenv()
 
-# Global OpenAI client
+# Global clients
 OPENAI_CLIENT = None
 if os.getenv("OPENAI_API_KEY"):
     OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+DEEPSEEK_CLIENT = None
+if os.getenv("DEEPSEEK_API_KEY"):
+    DEEPSEEK_CLIENT = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
+
+ANTHROPIC_CLIENT = None
+if os.getenv("ANTHROPIC_API_KEY"):
+    ANTHROPIC_CLIENT = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 def retry(retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)):
@@ -39,7 +48,7 @@ def retry(retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)
 
 
 @retry(retries=3, delay=2.0)
-def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: float = 0.0) -> dict:
+def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: float = 0.0, log_path: str = None) -> dict:
     try:
         response = ollama.generate(
             model=model or DEFAULT_MODEL,
@@ -70,6 +79,12 @@ def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: f
     # Basic cleanup for common LLM JSON mishaps
     content = content.replace('“', '"').replace('”', '"')
 
+    # Logging
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*50}\nPROMPT:\n{prompt}\n{'-'*50}\nRESPONSE:\n{content}\n{'='*50}\n")
+
     try:
         return json.loads(content)
     except Exception as e:
@@ -78,7 +93,7 @@ def ask_llm(prompt: str, num_ctx: int = 10240, model: str = None, temperature: f
 
 
 @retry(retries=3, delay=2.0)
-def ask_openai(prompt: str, model: str = None, temperature: float = 0.0) -> dict:
+def ask_openai(prompt: str, model: str = None, temperature: float = 0.0, log_path: str = None) -> dict:
     global OPENAI_CLIENT
     if not OPENAI_CLIENT:
         if os.getenv("OPENAI_API_KEY"):
@@ -105,11 +120,101 @@ def ask_openai(prompt: str, model: str = None, temperature: float = 0.0) -> dict
         content = match.group(0)
     content = content.replace('“', '"').replace('”', '"')
 
+    # Logging
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*50}\nPROMPT (OpenAI):\n{prompt}\n{'-'*50}\nRESPONSE:\n{content}\n{'='*50}\n")
+
     try:
         return json.loads(content)
     except Exception as e:
         print(f"❌ Failed to parse OpenAI response as JSON: {e}")
         raise ValueError(f"Failed to parse OpenAI response as JSON: {e}\n{content[:1000]}...")
+
+
+@retry(retries=3, delay=2.0)
+def ask_deepseek(prompt: str, model: str = None, temperature: float = 0.0, log_path: str = None) -> dict:
+    global DEEPSEEK_CLIENT
+    if not DEEPSEEK_CLIENT:
+        if os.getenv("DEEPSEEK_API_KEY"):
+            DEEPSEEK_CLIENT = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
+        else:
+            raise ValueError("DEEPSEEK_API_KEY not found in environment variables.")
+
+    target_model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    
+    try:
+        response = DEEPSEEK_CLIENT.chat.completions.create(
+            model=target_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            response_format={"type": "json_object"}
+        )
+    except Exception as e:
+        print(f"⚠️ DeepSeek Error with model {target_model}: {e}")
+        raise e
+
+    content = response.choices[0].message.content.strip()
+    match = re.search(r'\{.*\}', content, re.DOTALL)
+    if match:
+        content = match.group(0)
+    content = content.replace('“', '"').replace('”', '"')
+
+    # Logging
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*50}\nPROMPT (DeepSeek):\n{prompt}\n{'-'*50}\nRESPONSE:\n{content}\n{'='*50}\n")
+
+    try:
+        return json.loads(content)
+    except Exception as e:
+        print(f"❌ Failed to parse DeepSeek response as JSON: {e}")
+        raise ValueError(f"Failed to parse DeepSeek response as JSON: {e}\n{content[:1000]}...")
+
+
+@retry(retries=3, delay=2.0)
+def ask_claude(prompt: str, model: str = None, temperature: float = 0.0, log_path: str = None) -> dict:
+    global ANTHROPIC_CLIENT
+    if not ANTHROPIC_CLIENT:
+        if os.getenv("ANTHROPIC_API_KEY"):
+            ANTHROPIC_CLIENT = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        else:
+            raise ValueError("ANTHROPIC_API_KEY not found in environment variables.")
+
+    target_model = model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+    
+    try:
+        # Anthropic doesn't have a direct "json_object" response format like OpenAI yet,
+        # so we rely on prompt engineering and cleanup.
+        response = ANTHROPIC_CLIENT.messages.create(
+            model=target_model,
+            max_tokens=4096,
+            temperature=temperature,
+            messages=[{"role": "user", "content": prompt}]
+        )
+    except Exception as e:
+        print(f"⚠️ Claude Error with model {target_model}: {e}")
+        raise e
+
+    content = response.content[0].text.strip()
+    match = re.search(r'\{.*\}', content, re.DOTALL)
+    if match:
+        content = match.group(0)
+    content = content.replace('“', '"').replace('”', '"')
+
+    # Logging
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*50}\nPROMPT (Claude):\n{prompt}\n{'-'*50}\nRESPONSE:\n{content}\n{'='*50}\n")
+
+    try:
+        return json.loads(content)
+    except Exception as e:
+        print(f"❌ Failed to parse Claude response as JSON: {e}")
+        raise ValueError(f"Failed to parse Claude response as JSON: {e}\n{content[:1000]}...")
 
 
 def load_translation_cache() -> dict[str, str]:
