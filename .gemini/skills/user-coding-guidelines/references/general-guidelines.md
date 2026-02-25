@@ -29,3 +29,7 @@ Welcome to the sermon-voices project. Follow these core standards to maintain co
 - All one-shot code should be under scripts/
 - Any newly introduced lib or tech stack should be tested with a single script under scripts/poc/
 - Logs: all executions of main workflow (exclude poc or testing) should be saved to data/logs/<YYYYmmddHHMMSS>_<name>.txt for future audit.
+
+## Logs
+
+All user prompts should be saved to ./prompt_log.txt with a timestamp in the front, similar to lyrics file format.
