@@ -13,6 +13,8 @@ Strict adherence to these rules ensures a robust and maintainable codebase for t
 - Don't ever define a function inside a function
 - Use less variables if possible
 - Variable definition should be close to where it's used
+- Must strictly follow pep8 rules
+- Can use pyflakes/pylint/pycodestyle to lint and improve code after implementation
 
 
 
