@@ -112,12 +112,54 @@ Uses local LLM prompts to "guess" and extract structured data from chaotic folde
 ### 2. Transcription Engine
 Leverages `faster-whisper` for high-speed local transcription, utilizing CoreML/MPS on Apple Silicon.
 
+(Superseded for captioning by the FunASR pipeline below — kept here for the original
+process_audio.py phase, which is unrelated to caption generation.)
+
 ### 3. LLM Refiner
 Uses Ollama (e.g., `llama3`) to correct OCR-like errors in transcripts, improve punctuation, and identify speaker segments.
 
 ### 4. Translation & TTS
 - **Translation**: Batch-processed via Ollama.
 - **TTS**: Coqui XTTS v2 for high-quality voice cloning, ensuring the translated sermon sounds like the original preacher.
+
+## Caption Pipeline (`scripts/transcribe_to_captions.py` + `run_captions.sh`)
+
+Separate from the phases above: generates `.vtt`/`.lrc` captions for already-published S3
+audio, using local ASR only.
+
+**ASR stack (FunASR `AutoModel`, chained):**
+- `paraformer-zh` — non-autoregressive Chinese ASR
+- `fsmn-vad` — voice-activity detection (caps segments at 20s)
+- `ct-punc` — punctuation restoration
+- Hotword biasing via `output/bible_hotwords_combined_zh.txt` (scripture names/terms) —
+  main accuracy lever for sermon audio
+
+**Long-audio windowing:** episodes up to 150min are decoded once to 16kHz mono WAV, then
+cut into ~20min windows. Cut points snap to the locally quietest moment (numpy amplitude
+scan over a 45s search band) so splits land in silence, not mid-sentence. Timestamps are
+offset back into absolute episode time after each window.
+
+**Memory-as-restart-signal:** MPS never releases the memory pool it grows during
+inference (~3.7GB/window) — a long-lived worker inevitably OOMs. Instead of fighting the
+leak, `Budget` polls actual MPS driver-allocated memory after each window, tracks the
+largest per-window jump as a safety margin, and exits with code `75` ("more work
+remains") once `pool + margin ≥ --mem-ceiling-gb` (default 12GB). `run_captions.sh` is a
+supervisor loop: restart immediately on 75, restart after 60s on any other failure, stop
+on exit 0. This is what lets a multi-thousand-episode run complete over several days
+unattended, across thousands of worker restarts.
+
+**Two-level checkpointing** (makes restarts free):
+- Episode-level: one paginated `list-objects-v2` call at startup skips episodes already
+  captioned on S3.
+- Window-level: `asr_segments.partial.json` saves sentence results after every window, so
+  a mid-episode restart resumes at the next window. Decoded WAVs are cached in `/tmp`
+  (keyed by S3 key) so restarts skip re-decoding the mp3.
+
+**Cue construction:** sentence-level output (with per-token timestamps) is split at
+Chinese punctuation into caption-sized cues (≤28 chars, ≤8s), then short adjacent cues
+are remerged if they still fit. Same cue list renders `.vtt` (standard captions) and
+`.lrc` (lyrics-style players); raw `asr_segments.json` is kept locally so formats can be
+rebuilt without re-running ASR.
 
 ## Technical Decisions
 
